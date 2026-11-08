@@ -1,0 +1,1438 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#F9A8D4">
+<meta name="color-scheme" content="only light">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>PastelApp · Costos, precios y recetario de repostería</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;800&family=DM+Sans:wght@400;500;700&display=swap">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={theme:{extend:{colors:{choco:"#2C1810",choco2:"#1F100A",cream:"#FFFDF9",caramel:"#D97706",rose:"#E11D48",blush:"#FBD5DC",mint:"#CDEFE0"}}}}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+:root{color-scheme:only light}
+body{margin:0;background:radial-gradient(circle at 8% 0,#FBCFE8 0,transparent 38%),radial-gradient(circle at 92% 8%,#DDD6FE 0,transparent 38%),radial-gradient(circle at 50% 100%,#FEF3C7 0,transparent 45%),#FFFDF9;background-attachment:fixed;color:#2C1810;font-family:'DM Sans',system-ui,sans-serif}
+h1,h2,h3,.serif{font-family:'Fraunces',Georgia,serif}
+input,select,textarea,button{font-family:inherit}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+const { useState, useEffect } = React;
+const WA = "51958958855", YAPE = "900238270";
+const sha = async (t) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(t)))].map(b => b.toString(16).padStart(2, "0")).join("");
+const ADMIN_H = { e: "f74c5b415b089dd393bf79d4e95c9c7511facb8ab5130a81ea8ab4770b5a2356", p: "7a2645feaa5defd68beeba7d627cc47bad70325b970b9bf4a0479b4d7f296aa9" }; // solo huellas (hash); el correo y la clave no están escritos en el archivo
+/* ======== CONFIGURACIÓN DE SUPABASE (autenticación y aprobación reales) ========
+   1) Crea un proyecto en supabase.com y ejecuta supabase-setup.sql en el SQL Editor.
+   2) Pega aquí la URL del proyecto y la Publishable (anon) Key.
+   NUNCA pegues aquí una clave service_role ni ninguna clave secreta.
+   Si dejas ambos vacíos, la app funciona en MODO LOCAL (solo pruebas, datos en el navegador). */
+const SUPABASE_URL = ""; // ej: https://abcdxyz.supabase.co
+const SUPABASE_KEY = ""; // Publishable key (segura para el navegador)
+const SB = SUPABASE_URL && SUPABASE_KEY && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+/* Fotos reales: si publicas la app en tu propio hosting, puedes poner aquí la URL de una foto por receta, ej. { "Pai de Limón": "https://..." } */
+const FOTOS_URL = {};
+const S = n => "S/ " + (Math.round(n * 100) / 100).toLocaleString("es-PE", { minimumFractionDigits: 2 });
+const card = "rounded-3xl bg-white/95 border border-pink-200 shadow-md shadow-pink-100";
+const inp = "rounded-lg border border-choco/20 px-3 py-2 bg-white w-full";
+const btn = "rounded-xl font-bold px-4 py-2 ";
+function useLS(key, init) {
+    const [v, setV] = useState(() => { try {
+        const r = localStorage.getItem(key);
+        return r ? JSON.parse(r) : init;
+    }
+    catch (e) {
+        return init;
+    } });
+    const set = x => setV(p => { const n = typeof x === "function" ? x(p) : x; try {
+        localStorage.setItem(key, JSON.stringify(n));
+    }
+    catch (e) { } return n; });
+    return [v, set];
+}
+function copiar(t, ok) {
+    const fb = () => { try {
+        const a = document.createElement("textarea");
+        a.value = t;
+        document.body.appendChild(a);
+        a.select();
+        document.execCommand("copy");
+        a.remove();
+        ok();
+    }
+    catch (e) {
+        alert("Copia el número: " + t);
+    } };
+    try {
+        navigator.clipboard.writeText(t).then(ok, fb);
+    }
+    catch (e) {
+        fb();
+    }
+}
+/* ---------- DATOS: ingredientes (precio por unidad base, referencia de mercado en S/) ---------- */
+const ING = {
+    harina: { n: "Harina de trigo", b: "kg", t: .12, c: .008, m: [["Nicolini", 4.2], ["Molitalia", 3.9], ["Favorita", 3.6]] },
+    azucar: { n: "Azúcar rubia", b: "kg", t: .2, c: .012, m: [["Cartavio", 4.2], ["Paramonga", 3.9]] },
+    leche: { n: "Leche", b: "L", t: .24, c: .015, m: [["Gloria", 4.8], ["Bonlé", 4.3], ["Ideal", 3.9]] },
+    mantequilla: { n: "Mantequilla / grasa", b: "kg", t: .225, c: .014, m: [["La Preferida", 36], ["Gloria", 38], ["Margarina Sello de Oro", 18]] },
+    huevo: { n: "Huevo", b: "u", m: [["San Fernando", .7], ["Granja local", .55]] },
+    cacao: { n: "Cacao en polvo", b: "kg", t: .1, c: .006, m: [["Machu Picchu", 30], ["Winter's", 34]] },
+    aceite: { n: "Aceite vegetal", b: "L", t: .24, c: .015, m: [["Primor", 8.5], ["Cocinero", 7.8]] },
+    levadura: { n: "Levadura (sobre 10 g)", b: "p", m: [["Fleischmann", .8], ["Universal", .6]] },
+    sal: { n: "Sal", b: "kg", t: .28, c: .018, m: [["Emsal", 1.2]] },
+    limon: { n: "Limón", b: "kg", t: .2, c: .015, m: [["Limón sutil", 4.5], ["Mercado mayorista", 3.8]] },
+    condensada: { n: "Leche condensada", b: "kg", t: .3, c: .02, m: [["Gloria", 14.5], ["Nestlé", 15.5]] },
+    galleta: { n: "Galleta de soda", b: "kg", t: .1, c: .008, m: [["Field", 9], ["Victoria", 8]] },
+    crema: { n: "Crema de leche", b: "L", t: .24, c: .015, m: [["Gloria", 18], ["Laive", 17]] },
+    quesocrema: { n: "Queso crema", b: "kg", t: .24, c: .016, m: [["Philadelphia", 38], ["Gloria", 28]] },
+};
+const UN = { kg: ["kg", "g", "tazas", "cucharadas"], L: ["L", "ml", "tazas", "cucharadas"], u: ["unidades"], p: ["paquetes"] };
+const BL = { kg: "kg", L: "L", u: "unidad", p: "paquete" };
+const toBase = (g, q, u) => ({ kg: q, L: q, g: q / 1000, ml: q / 1000, tazas: q * g.t, cucharadas: q * g.c, unidades: q, paquetes: q }[u] || 0);
+const CATS = ["Tortas y Pasteles", "Panes", "Pie & Tartas", "Postres Peruanos", "Postres Internacionales"];
+const RECS = [
+    { id: "torta", cat: 0, n: "Torta de chocolate", e: "🎂", porc: 12, otros: 4, l: [["harina", 2, "tazas"], ["azucar", 1.5, "tazas"], ["cacao", 6, "cucharadas"], ["huevo", 3, "unidades"], ["leche", 1, "tazas"], ["aceite", .5, "tazas"], ["mantequilla", 100, "g"]] },
+    { id: "pan", cat: 1, n: "Pan de molde (12 panes)", e: "🍞", porc: 12, otros: 3, l: [["harina", 1, "kg"], ["levadura", 2, "paquetes"], ["azucar", 2, "cucharadas"], ["sal", 1, "cucharadas"], ["aceite", 3, "cucharadas"], ["leche", 1, "tazas"]] },
+    { id: "pie", cat: 2, n: "Pie de limón", e: "🥧", porc: 8, otros: 3, l: [["galleta", 250, "g"], ["mantequilla", 120, "g"], ["condensada", 400, "g"], ["limon", 200, "g"], ["huevo", 3, "unidades"]] },
+    { id: "suspiro", cat: 3, n: "Suspiro a la limeña", e: "🍮", porc: 10, otros: 3, l: [["condensada", 400, "g"], ["leche", 1, "tazas"], ["huevo", 4, "unidades"], ["azucar", 1.5, "tazas"]] },
+    { id: "cheese", cat: 4, n: "Cheesecake", e: "🍰", porc: 10, otros: 4, l: [["quesocrema", 500, "g"], ["galleta", 200, "g"], ["mantequilla", 80, "g"], ["azucar", 1, "tazas"], ["huevo", 3, "unidades"], ["crema", 1, "tazas"]] },
+];
+const P = s => s.split(";").filter(Boolean).map(x => { const i = x.indexOf(":"); return [x.slice(0, i), x.slice(i + 1)]; });
+const mix = (b, m) => { let L = P(b); m.split(";").filter(Boolean).forEach(x => { if (x[0] === "-")
+    L = L.filter(i => i[0] !== x.slice(1));
+else {
+    const [k, v] = P(x)[0];
+    const j = L.findIndex(i => i[0] === k);
+    if (j >= 0)
+        L[j] = [k, v];
+    else
+        L.push([k, v]);
+} }); return L; };
+const fam = (cat, t, por, base, steps, vars) => vars.map(([n, k, m, ...vs]) => ({ n, cat, t, kcal: k, por, ing: mix(base, m), pasos: steps.map(s => s.replace(/\{(\d)\}/g, (_, i) => vs[i])).filter(s => s.trim() && !/undefined/.test(s)) }));
+const solo = (cat, arr) => arr.map(([n, k, t, i, p]) => ({ n, cat, t, kcal: k, por: 8, ing: P(i), pasos: p.split("|") }));
+const TORTAS = fam(0, "t", 12, "Harina de trigo:250 g;Azúcar:200 g;Mantequilla:150 g;Huevos:4 unidades;Leche:120 ml;Polvo de hornear:2 cdtas;Esencia de vainilla:1 cdta;Sal:1 pizca", ["Precalienta el horno a 175 °C y enmantequilla un molde de 22 cm.", "Bate la mantequilla con el azúcar 5 minutos hasta que esté cremosa.", "Agrega los huevos de uno en uno y alterna la harina tamizada con polvo de hornear y la leche.", "{0}", "Hornea 35 a 40 minutos (un palillo debe salir limpio) y deja enfriar 20 minutos.", "Desmolda, enfría por completo y decora con {1}."], [["Torta de Chocolate", 390, "Harina de trigo:200 g;Cacao en polvo:50 g", "Incorpora el cacao tamizado junto con la harina.", "ganache (200 g de chocolate y 100 ml de crema)"],
+    ["Torta de Vainilla", 340, "Esencia de vainilla:2 cdtas", "Añade la vainilla extra para un sabor intenso.", "crema chantilly y fresas"],
+    ["Red Velvet", 410, "Cacao en polvo:2 cdas;Colorante rojo:1 cda;Vinagre blanco:1 cdta;Yogur natural:100 g", "Mezcla el colorante, el vinagre y el yogur con la leche antes de añadirlos.", "frosting de queso crema (250 g de queso crema, 100 g de mantequilla y 150 g de azúcar glas)"],
+    ["Torta de Zanahoria", 370, "Zanahoria rallada:250 g;Canela molida:2 cdtas;Nueces picadas:80 g;-Leche", "Incorpora la zanahoria, la canela y las nueces al final.", "frosting de queso crema"],
+    ["Torta de Limón", 330, "Jugo de limón:60 ml;Ralladura de limón:2 cdtas", "Agrega el jugo y la ralladura de limón a la masa.", "glaseado de limón (100 g de azúcar glas y 2 cdas de jugo)"],
+    ["Torta de Naranja", 335, "-Leche;Jugo de naranja:120 ml;Ralladura de naranja:2 cdtas", "Reemplaza la leche por jugo de naranja y agrega la ralladura.", "almíbar de naranja"],
+    ["Torta Marmoleada", 360, "Cacao en polvo:30 g", "Separa un tercio de la masa, mézclala con el cacao y combina con un tenedor haciendo remolinos.", "azúcar glas"],
+    ["Torta Tres Leches", 450, "Leche evaporada:410 g;Leche condensada:397 g;Crema de leche:250 ml", "Pincha el bizcocho caliente y báñalo con la mezcla de las tres leches.", "merengue o chantilly y canela"],
+    ["Selva Negra", 420, "Harina de trigo:210 g;Cacao en polvo:40 g;Cerezas en almíbar:300 g;Crema de leche:400 ml;Chocolate rallado:60 g", "Incorpora el cacao con la harina.", "capas de chantilly, cerezas y chocolate rallado"],
+    ["Keke de Plátano", 320, "Plátano maduro:3 unidades;Nueces:60 g;Canela molida:1 cdta;Azúcar:150 g;-Leche", "Aplasta los plátanos e incorpóralos a la masa.", "un chorrito de miel (o sírvelo simple)"],
+    ["Torta de Coco", 380, "-Leche;Leche de coco:120 ml;Coco rallado:100 g", "Cambia la leche por leche de coco y agrega el coco rallado.", "coco rallado tostado"],
+    ["Torta de Manzana", 350, "Manzana:3 unidades;Canela molida:2 cdtas", "Corta la manzana en cubos pequeños y mézclala con la canela antes de añadir.", "azúcar glas"],
+    ["Torta Helada", 400, "Crema de leche:500 ml;Azúcar glas:80 g;Gelatina sin sabor:10 g", "Bate la crema con el azúcar glas y la gelatina disuelta.", "la crema (refrigera 4 horas antes de servir)"],
+    ["Torta Moka", 400, "Café fuerte:80 ml;Cacao en polvo:30 g", "Mezcla el café con la leche y agrega el cacao.", "crema de mantequilla de café"],
+    ["Torta de Manjar", 430, "Manjar blanco:400 g", "Corta el bizcocho en 3 capas.", "manjar entre las capas y por fuera"],
+    ["Torta de Fresas con Crema", 360, "Fresas:300 g;Crema de leche:300 ml;Azúcar glas:60 g", "Corta el bizcocho en 2 capas y bate la crema con el azúcar glas.", "crema y fresas laminadas"],
+    ["Torta Brownie", 440, "Chocolate semiamargo:200 g;Cacao en polvo:30 g;Harina de trigo:100 g", "Derrite el chocolate con la mantequilla y mézclalo con el resto.", "helado de vainilla"],
+    ["Torta de Maracuyá", 345, "Pulpa de maracuyá:150 g", "Agrega la pulpa de maracuyá a la masa.", "glaseado de maracuyá"],
+    ["Torta de Lúcuma", 365, "Pulpa de lúcuma:200 g;Azúcar:150 g", "Mezcla la pulpa de lúcuma con la leche y añade a la masa.", "crema de lúcuma"],
+    ["Torta de Almendras", 395, "Almendras molidas:100 g;Harina de trigo:150 g;Esencia de almendra:1 cdta", "Sustituye parte de la harina por almendra molida.", "láminas de almendra tostada"]]);
+const PIES = fam(2, "p", 8, "Harina de trigo:250 g;Mantequilla fría:125 g;Azúcar glas:50 g;Huevo:1 unidad;Sal:1 pizca;Agua fría:2 cdas", ["Mezcla la harina, el azúcar glas y la sal; añade la mantequilla fría en cubos hasta lograr migas.", "Agrega el huevo y el agua, forma un disco y refrigera 30 minutos.", "Estira la masa, forra un molde de 24 cm, pincha el fondo y hornea en blanco 15 minutos a 180 °C.", "{0}", "{1}", "Deja enfriar y refrigera 2 horas antes de desmoldar para que corte limpio."], [["Pai de Limón", 320, "Leche condensada:400 g;Jugo de limón:150 ml;Yemas:3 unidades;Claras:3 unidades;Azúcar:100 g", "Mezcla la leche condensada, las yemas y el jugo de limón.", "Rellena, hornea 10 minutos y cubre con merengue hecho con las claras y el azúcar."],
+    ["Tarta de Manzana", 340, "Manzana:5 unidades;Azúcar:80 g;Canela molida:2 cdtas;Jugo de limón:1 cda", "Cocina la manzana en cubos con azúcar y canela 8 minutos.", "Rellena y hornea 30 minutos a 180 °C."],
+    ["Tarta de Fresas", 330, "Fresas:400 g;Leche:500 ml;Yemas:4 unidades;Azúcar:100 g;Maicena:40 g", "Cocina leche, yemas, azúcar y maicena hasta espesar para la crema pastelera.", "Rellena con la crema y decora con las fresas."],
+    ["Pie de Maracuyá", 350, "Pulpa de maracuyá:200 g;Leche condensada:397 g;Crema de leche:200 ml", "Bate la leche condensada con la pulpa y la crema.", "Vierte sobre la base y refrigera 4 horas."],
+    ["Tarta de Chocolate", 420, "Chocolate semiamargo:250 g;Crema de leche:250 ml;Mantequilla:30 g", "Calienta la crema y viértela sobre el chocolate; mezcla con la mantequilla.", "Vierte el ganache en la base y refrigera 2 horas."],
+    ["Tarta de Queso", 380, "Queso crema:400 g;Azúcar:100 g;Huevos:2 unidades;Esencia de vainilla:1 cdta", "Bate el queso crema con azúcar, huevos y vainilla.", "Vierte y hornea 30 minutos a 160 °C."],
+    ["Pie de Zapallo", 330, "Puré de zapallo:400 g;Azúcar rubia:120 g;Huevos:2 unidades;Canela molida:2 cdtas;Crema de leche:150 ml", "Mezcla el puré con azúcar, huevos, canela y crema.", "Vierte y hornea 45 minutos a 175 °C."],
+    ["Tarta de Nueces", 450, "Nueces:200 g;Miel:150 ml;Azúcar rubia:100 g;Huevos:3 unidades;Mantequilla derretida:50 g", "Mezcla miel, azúcar, huevos y mantequilla.", "Coloca las nueces, vierte la mezcla y hornea 40 minutos a 175 °C."],
+    ["Tarta de Frutos Rojos", 310, "Frutos rojos:400 g;Azúcar:80 g;Maicena:20 g", "Cocina los frutos con azúcar y maicena 5 minutos.", "Rellena y refrigera hasta que cuaje."],
+    ["Tarta de Durazno", 320, "Duraznos:5 unidades;Azúcar:80 g;Canela molida:1 cdta;Maicena:20 g", "Corta los duraznos y mézclalos con azúcar, canela y maicena.", "Rellena y hornea 35 minutos a 180 °C."],
+    ["Tarta Tatin", 360, "Manzana:6 unidades;Azúcar:150 g;Mantequilla:60 g", "Haz un caramelo con azúcar y mantequilla y cocina las manzanas 10 minutos.", "Cubre con la masa, hornea 30 minutos y voltea caliente."],
+    ["Tarta de Mermelada", 340, "Mermelada de fresa:300 g;Almendras molidas:80 g", "Mezcla la almendra molida con la masa.", "Cubre con mermelada, arma una rejilla de masa y hornea 30 minutos."],
+    ["Tarta de Lúcuma", 400, "Pulpa de lúcuma:300 g;Leche condensada:200 g;Crema de leche:200 ml", "Bate la pulpa con la leche condensada y la crema.", "Vierte sobre la base y refrigera 4 horas."],
+    ["Banoffee", 430, "Plátano:4 unidades;Manjar blanco:400 g;Crema de leche:250 ml", "Extiende el manjar sobre la base fría.", "Cubre con rodajas de plátano y crema chantilly."],
+    ["Tarta de Moras", 300, "Moras:400 g;Azúcar:100 g;Maicena:25 g", "Cocina las moras con azúcar y maicena 5 minutos.", "Rellena y hornea 25 minutos a 180 °C."],
+    ["Tarta de Higos", 330, "Higos:10 unidades;Miel:60 g;Queso crema:150 g", "Unta queso crema sobre la base.", "Coloca los higos en mitades, baña con miel y hornea 20 minutos."],
+    ["Tarta de Coco", 410, "Coco rallado:150 g;Leche condensada:397 g;Huevos:2 unidades", "Mezcla coco, leche condensada y huevos.", "Vierte y hornea 30 minutos a 175 °C."],
+    ["Tarta de Café", 390, "Café fuerte:100 ml;Crema de leche:300 ml;Chocolate semiamargo:100 g;Azúcar:60 g", "Calienta crema con café y azúcar y viértela sobre el chocolate.", "Vierte en la base y refrigera 3 horas."],
+    ["Tarta de Naranja", 340, "Jugo de naranja:200 ml;Ralladura de naranja:1 cda;Yemas:4 unidades;Azúcar:120 g;Maicena:30 g", "Cocina jugo, yemas, azúcar y maicena hasta espesar.", "Rellena la base y refrigera 3 horas."],
+    ["Tarta de Chirimoya", 320, "Chirimoya:3 unidades;Crema de leche:250 ml;Azúcar:80 g", "Licúa la pulpa de chirimoya con el azúcar y mézclala con la crema batida.", "Rellena la base y refrigera 4 horas."]]);
+const PANES = fam(1, "b", 10, "Harina de trigo:500 g;Agua tibia:300 ml;Levadura seca:7 g;Sal:10 g;Azúcar:10 g;Aceite vegetal:2 cdas", ["Mezcla la harina, la sal, el azúcar y la levadura; agrega el agua y el aceite.", "{0}", "Amasa 10 minutos hasta que la masa esté lisa y elástica.", "Deja levar tapada 1 hora en un lugar tibio, hasta que doble su tamaño.", "Desgasifica, forma los panes y deja reposar 30 minutos más.", "{1}"], [["Pan Francés", 160, "", "", "Forma bollos ovalados, haz un corte a lo largo y hornea 20 minutos a 220 °C con un recipiente de agua en el horno."],
+    ["Ciabatta", 170, "Agua tibia:380 ml;Levadura seca:3 g", "La masa será muy húmeda: trabájala con pliegues en lugar de amasar fuerte.", "Estira rectángulos sin desgasificar y hornea 25 minutos a 230 °C."],
+    ["Baguette", 160, "", "", "Forma barras largas, corta 3 tajos en diagonal y hornea 25 minutos a 230 °C con vapor."],
+    ["Pan de Molde", 190, "Leche:100 ml;Mantequilla:40 g;Azúcar:30 g;Agua tibia:200 ml", "Reemplaza parte del agua por leche y agrega la mantequilla blanda.", "Coloca la masa en un molde de pan y hornea 35 minutos a 190 °C."],
+    ["Pan Integral", 150, "Harina de trigo:250 g;Harina integral:250 g;Miel:1 cda", "", "Forma una hogaza y hornea 35 minutos a 210 °C."],
+    ["Pan de Centeno", 160, "Harina de trigo:350 g;Harina de centeno:150 g;Semillas de comino:1 cda", "", "Forma una hogaza redonda y hornea 40 minutos a 210 °C."],
+    ["Focaccia", 210, "Aceite de oliva:80 ml;Romero fresco:1 cda;Sal gruesa:1 cdta;Agua tibia:350 ml", "Agrega 3 cucharadas de aceite de oliva a la masa.", "Extiende en una bandeja aceitada, haz hoyitos con los dedos, añade aceite, romero y sal gruesa y hornea 25 minutos a 220 °C."],
+    ["Pan de Cebolla", 180, "Cebolla:2 unidades;Mantequilla:30 g", "Sofríe la cebolla picada con la mantequilla y déjala enfriar.", "Incorpora la cebolla al amasar y hornea 30 minutos a 210 °C."],
+    ["Pan de Ajo", 190, "Ajo:6 dientes;Perejil:2 cdas;Mantequilla:60 g", "", "Mezcla el ajo picado, el perejil y la mantequilla; unta el pan y hornea 25 minutos a 210 °C."],
+    ["Pan de Queso", 230, "Queso rallado:150 g;Mantequilla:30 g", "Incorpora 100 g de queso a la masa.", "Cubre con el queso restante y hornea 25 minutos a 200 °C."],
+    ["Brioche", 260, "-Agua tibia;Huevos:3 unidades;Mantequilla:150 g;Azúcar:60 g;Leche:60 ml", "Agrega los huevos y la leche; incorpora la mantequilla blanda poco a poco.", "Barniza con huevo batido y hornea 30 minutos a 180 °C."],
+    ["Pan de Leche", 200, "Leche:300 ml;-Agua tibia;Mantequilla:50 g;Azúcar:40 g", "Usa leche tibia en lugar de agua y suma la mantequilla.", "Barniza con leche y hornea 25 minutos a 190 °C."],
+    ["Pan Pita", 140, "", "", "Divide en 8 bolas, estira discos de 5 mm y hornea 4 minutos por lado a 250 °C hasta que se inflen."],
+    ["Pan Naan", 190, "Yogur natural:100 g;Mantequilla derretida:30 g;Agua tibia:200 ml", "Mezcla el yogur con el agua antes de incorporar.", "Estira óvalos y cocina en sartén muy caliente 2 minutos por lado; unta con mantequilla."],
+    ["Pan de Maíz", 180, "Harina de trigo:350 g;Harina de maíz:150 g;Azúcar:30 g", "", "Forma bollos y hornea 30 minutos a 200 °C."],
+    ["Bagels", 210, "Miel:2 cdas;Agua tibia:260 ml", "", "Forma aros, hiérvelos 1 minuto por lado en agua con miel y hornea 20 minutos a 220 °C."],
+    ["Pan de Avena", 170, "Harina de trigo:400 g;Avena en hojuelas:100 g;Miel:1 cda", "", "Cubre con hojuelas de avena y hornea 35 minutos a 200 °C."],
+    ["Pan de Masa Madre", 160, "Masa madre activa:150 g;-Levadura seca;Agua tibia:280 ml", "Disuelve la masa madre en el agua antes de mezclar.", "Hornea 40 minutos a 230 °C en una olla tapada."],
+    ["Pan Chuta", 200, "Manteca vegetal:60 g;Anís en grano:1 cdta;Agua tibia:320 ml", "Disuelve la manteca y el anís en el agua tibia.", "Forma panes grandes y redondos y hornea 35 minutos a 200 °C hasta que doren."],
+    ["Pan de Aceituna", 190, "Aceitunas negras:120 g;Orégano:1 cdta;Aceite de oliva:3 cdas", "Pica las aceitunas e incorpóralas con el orégano.", "Forma una hogaza y hornea 35 minutos a 210 °C."]]);
+const TIRA = fam(4, "c", 8, "Queso mascarpone:500 g;Crema de leche:250 ml;Yemas:4 unidades;Azúcar:100 g;Soletillas:200 g;Café fuerte frío:250 ml;Cacao en polvo:2 cdas", ["Bate las yemas con el azúcar a baño maría 5 minutos hasta que espesen y deja enfriar.", "Mezcla el mascarpone con las yemas e incorpora la crema batida con movimientos envolventes.", "Moja las soletillas rápidamente en el café (2 segundos por lado).", "{0}", "Refrigera mínimo 6 horas y espolvorea cacao antes de servir."], [["Tiramisú Clásico", 360, "", "Arma capas: soletillas, crema, soletillas, crema."],
+    ["Tiramisú de Fresa", 340, "Fresas:300 g", "Alterna capas de soletillas, crema y fresas laminadas."],
+    ["Tiramisú de Chocolate", 410, "Chocolate semiamargo rallado:100 g", "Alterna capas de soletillas, crema y chocolate rallado."],
+    ["Tiramisú de Lúcuma", 370, "Pulpa de lúcuma:250 g;-Café fuerte frío;Leche:250 ml", "Moja las soletillas en leche y arma capas con la crema mezclada con la lúcuma."]]);
+const PERU = solo(3, [
+    ["Suspiro a la Limeña", 380, "c", "Leche condensada:397 g;Leche evaporada:410 g;Yemas:6 unidades;Oporto:2 cdas;Claras:4 unidades;Azúcar:300 g;Canela molida:1 cdta", "Cocina las leches y las yemas a fuego bajo 25 minutos hasta espesar.|Sirve el manjar en vasitos y deja enfriar.|Bate las claras con un almíbar de azúcar y oporto hasta formar un merengue firme.|Cubre cada vaso con merengue y espolvorea canela."],
+    ["Mazamorra Morada", 180, "c", "Maíz morado:500 g;Agua:2 L;Piña:1 unidad;Manzana:2 unidades;Membrillo:1 unidad;Canela en rama:2 unidades;Clavo de olor:4 unidades;Azúcar:200 g;Maicena:100 g;Limón:2 unidades", "Hierve el maíz morado con piña, manzana, membrillo, canela y clavo 45 minutos.|Cuela y endulza con el azúcar.|Disuelve la maicena en agua fría y agrégala hirviendo hasta espesar.|Añade el jugo de limón y sirve."],
+    ["Arroz con Leche", 290, "c", "Arroz:200 g;Agua:500 ml;Leche evaporada:410 g;Leche fresca:500 ml;Leche condensada:200 g;Canela en rama:2 unidades;Pasas:50 g", "Cocina el arroz con el agua y la canela hasta que seque.|Agrega las leches y cocina 30 minutos moviendo.|Añade la leche condensada y las pasas y sirve frío."],
+    ["Alfajores de Maicena", 160, "g", "Maicena:300 g;Harina de trigo:150 g;Mantequilla:200 g;Yemas:4 unidades;Azúcar glas:80 g;Pisco:1 cda;Manjar blanco:300 g;Coco rallado:50 g", "Mezcla la mantequilla con el azúcar glas; añade yemas y pisco.|Incorpora maicena y harina; refrigera 30 minutos.|Estira a 5 mm, corta círculos y hornea 12 minutos a 170 °C.|Une de a dos con manjar y pasa los bordes por coco rallado."],
+    ["Picarones", 330, "g", "Zapallo:250 g;Camote:250 g;Harina de trigo:500 g;Levadura seca:10 g;Agua tibia:300 ml;Anís en grano:1 cdta;Chancaca:300 g;Canela en rama:2 unidades;Aceite para freír:1 L", "Sancocha el zapallo y el camote y haz un puré.|Mezcla con harina, levadura, anís y agua; reposa 1 hora.|Forma aros con la mano mojada y fríe en aceite caliente hasta dorar.|Hierve la chancaca con canela y baña los picarones."],
+    ["Turrón de Doña Pepa", 420, "g", "Harina de trigo:500 g;Manteca vegetal:200 g;Yemas:6 unidades;Anís en grano:2 cdas;Chancaca:500 g;Azúcar:200 g;Grageas de colores:50 g", "Amasa harina, manteca, yemas y anís; forma bastoncitos y hornea 15 minutos a 180 °C.|Prepara la miel hirviendo chancaca y azúcar 15 minutos.|Arma capas de bastoncitos y miel en una fuente.|Decora con grageas y deja reposar 4 horas."],
+    ["Crema Volteada", 300, "f", "Leche evaporada:410 g;Leche condensada:397 g;Huevos:6 unidades;Esencia de vainilla:1 cdta;Azúcar para caramelo:150 g", "Prepara un caramelo con el azúcar y cubre el molde.|Licúa las leches, los huevos y la vainilla.|Vierte y cocina a baño maría 50 minutos a 170 °C.|Enfría y voltea."],
+    ["Queso Helado", 250, "c", "Leche evaporada:410 g;Leche condensada:397 g;Leche fresca:500 ml;Coco rallado:100 g;Canela molida:2 cdtas;Esencia de vainilla:1 cdta", "Licúa las leches, el coco y la vainilla.|Congela 4 horas moviendo cada hora.|Sirve en copa con canela."],
+    ["Mousse de Maracuyá", 260, "c", "Pulpa de maracuyá:200 g;Leche condensada:397 g;Crema de leche:300 ml;Gelatina sin sabor:10 g", "Hidrata la gelatina en 4 cdas de agua y derrítela a baño maría.|Bate la crema a punto chantilly.|Mezcla pulpa, leche condensada y gelatina; incorpora la crema.|Refrigera 4 horas."],
+    ["Mousse de Lúcuma", 270, "c", "Pulpa de lúcuma:250 g;Crema de leche:300 ml;Leche condensada:200 g;Gelatina sin sabor:8 g", "Hidrata la gelatina y derrítela a baño maría.|Bate la crema a punto chantilly.|Mezcla lúcuma, leche condensada y gelatina; incorpora la crema.|Refrigera 4 horas."],
+    ["Pastel de Choclo", 360, "p", "Choclo desgranado:6 unidades;Huevos:4 unidades;Queso fresco:200 g;Mantequilla:80 g;Azúcar:80 g;Leche:200 ml;Polvo de hornear:1 cdta;Sal:1 pizca", "Licúa el choclo con la leche, los huevos y la mantequilla derretida.|Mezcla con azúcar, queso en cubos, sal y polvo de hornear.|Vierte en molde engrasado y hornea 45 minutos a 180 °C."],
+    ["Tejas", 150, "g", "Manjar blanco:400 g;Pecanas:150 g;Azúcar glas:200 g;Limón:2 unidades;Clara:1 unidad;Chocolate para cobertura:300 g", "Mezcla el manjar con las pecanas picadas y forma bolitas.|Prepara un fondant con azúcar glas, jugo de limón y clara.|Cubre las bolitas con el fondant.|Báñalas en chocolate derretido y deja secar."],
+    ["Cocadas", 190, "g", "Coco rallado:300 g;Leche condensada:397 g;Yemas:2 unidades;Mantequilla:30 g", "Cocina todo a fuego bajo 10 minutos hasta que se despegue de la olla.|Deja enfriar y forma bolitas.|Hornea 12 minutos a 180 °C hasta dorar."],
+    ["Leche Asada", 280, "f", "Leche fresca:1 L;Huevos:5 unidades;Azúcar:150 g;Esencia de vainilla:1 cdta", "Hierve la leche con la vainilla y deja entibiar.|Bate los huevos con el azúcar y mezcla con la leche.|Hornea a baño maría 45 minutos a 170 °C y enfría."],
+    ["Quinua con Leche", 240, "c", "Quinua cocida:200 g;Leche fresca:500 ml;Leche evaporada:410 g;Azúcar:80 g;Canela en rama:1 unidad;Pasas:40 g", "Hierve la quinua con la leche y la canela 15 minutos.|Agrega la leche evaporada, el azúcar y las pasas.|Cocina 10 minutos más y sirve tibio o frío."],
+    ["Ranfañote", 330, "c", "Pan viejo:300 g;Chancaca:250 g;Leche:500 ml;Pasas:60 g;Nueces:60 g;Canela en rama:1 unidad;Mantequilla:30 g", "Hierve la chancaca con canela hasta hacer una miel.|Remoja el pan en la leche y desmenúzalo.|Mezcla con la miel, pasas, nueces y mantequilla.|Cocina 10 minutos y sirve."],
+    ["Frejol Colado", 260, "c", "Frejol canario cocido:500 g;Chancaca:200 g;Ajonjolí tostado:3 cdas;Canela molida:1 cdta;Aceite vegetal:2 cdas;Pasas:50 g", "Licúa el frejol y cuélalo.|Cocina con la chancaca, la canela y el aceite hasta espesar.|Sirve con ajonjolí y pasas."],
+    ["Pionono", 340, "t", "Huevos:6 unidades;Azúcar:150 g;Harina de trigo:150 g;Manjar blanco:400 g;Almendras:50 g", "Bate los huevos con el azúcar a punto cinta e incorpora la harina.|Hornea en bandeja 10 minutos a 190 °C.|Unta manjar, enrolla caliente y deja reposar.|Decora con almendras y azúcar glas."],
+    ["Mazamorra de Quinua", 220, "c", "Quinua:200 g;Agua:1 L;Leche evaporada:410 g;Azúcar:100 g;Canela en rama:1 unidad;Clavo de olor:3 unidades", "Lava la quinua y hiérvela con canela y clavo 25 minutos.|Agrega la leche y el azúcar.|Cocina 10 minutos y sirve."],
+    ["Bizcocho de Quinua", 330, "t", "Harina de quinua:150 g;Harina de trigo:150 g;Huevos:4 unidades;Azúcar:200 g;Mantequilla:120 g;Leche:150 ml;Polvo de hornear:2 cdtas;Canela molida:1 cdta", "Bate la mantequilla con el azúcar y añade los huevos.|Incorpora las harinas, el polvo de hornear, la canela y la leche.|Hornea 40 minutos a 175 °C."]
+]);
+const INTL = [...TIRA, ...solo(4, [
+        ["Cheesecake Nueva York", 420, "t", "Queso crema:900 g;Azúcar:200 g;Huevos:4 unidades;Yogur natural:200 g;Galleta molida:250 g;Mantequilla derretida:100 g;Esencia de vainilla:2 cdtas", "Mezcla la galleta con la mantequilla y presiona en un molde de 23 cm.|Bate el queso crema, el azúcar, el yogur y la vainilla; añade los huevos de uno en uno.|Hornea a baño maría 60 minutos a 160 °C.|Deja 1 hora en el horno apagado y refrigera 6 horas."],
+        ["Crème Brûlée", 340, "f", "Crema de leche:500 ml;Yemas:5 unidades;Azúcar:100 g;Esencia de vainilla:1 cdta;Azúcar para caramelizar:40 g", "Calienta la crema con la vainilla.|Bate yemas con azúcar y mezcla con la crema.|Hornea a baño maría 40 minutos a 150 °C y enfría.|Caramelizar el azúcar encima con soplete."],
+        ["Panna Cotta", 300, "c", "Crema de leche:500 ml;Leche:100 ml;Azúcar:80 g;Gelatina sin sabor:8 g;Esencia de vainilla:1 cdta;Salsa de fresa:150 g", "Hidrata la gelatina en la leche fría.|Calienta la crema con azúcar y vainilla y disuelve la gelatina.|Vierte en vasos y refrigera 4 horas.|Cubre con salsa de fresa."],
+        ["Macarons", 90, "g", "Harina de almendra:150 g;Azúcar glas:150 g;Claras:110 g;Azúcar:150 g;Colorante en gel:1 gota;Ganache de chocolate:200 g", "Tamiza la almendra con el azúcar glas.|Bate las claras con el azúcar a punto firme y tiñe.|Incorpora lo seco, dosifica círculos y deja formar piel 30 minutos.|Hornea 15 minutos a 150 °C y rellena con ganache."],
+        ["Croissants", 270, "b", "Harina de trigo:500 g;Leche tibia:250 ml;Azúcar:60 g;Sal:10 g;Levadura seca:10 g;Mantequilla para laminar:280 g;Huevo:1 unidad", "Amasa harina, leche, azúcar, sal y levadura y refrigera 1 hora.|Incorpora la mantequilla en lámina y dobla en 3.|Repite el plegado 3 veces con reposo en frío.|Corta triángulos, enrolla, deja levar 1 hora, barniza con huevo y hornea 20 minutos a 200 °C."],
+        ["Dorayakis", 250, "g", "Huevos:3 unidades;Azúcar:80 g;Miel:2 cdas;Harina de trigo:150 g;Polvo de hornear:1 cdta;Agua:60 ml;Pasta de frejol dulce:300 g", "Bate los huevos con azúcar y miel.|Incorpora harina, polvo de hornear y agua; reposa 15 minutos.|Cocina discos pequeños en sartén antiadherente.|Rellena de a dos con la pasta de frejol."],
+        ["Brownie", 230, "t", "Chocolate semiamargo:200 g;Mantequilla:150 g;Azúcar:200 g;Huevos:3 unidades;Harina de trigo:100 g;Cacao en polvo:30 g;Nueces:80 g", "Derrite el chocolate con la mantequilla.|Mezcla con azúcar y huevos; añade harina, cacao y nueces.|Hornea 25 minutos a 180 °C en molde cuadrado."],
+        ["Cookies de Chispas", 190, "g", "Mantequilla:170 g;Azúcar rubia:150 g;Azúcar:50 g;Huevo:1 unidad;Esencia de vainilla:1 cdta;Harina de trigo:280 g;Bicarbonato:1/2 cdta;Chispas de chocolate:200 g", "Bate mantequilla con los azúcares; añade el huevo y la vainilla.|Incorpora harina, bicarbonato y chispas.|Forma bolitas y hornea 11 minutos a 180 °C."],
+        ["Profiteroles", 220, "g", "Agua:250 ml;Mantequilla:100 g;Harina de trigo:150 g;Huevos:4 unidades;Crema de leche:300 ml;Chocolate semiamargo:150 g", "Hierve agua con mantequilla, añade la harina y cocina 2 minutos.|Incorpora los huevos y dosifica bolitas.|Hornea 25 minutos a 200 °C y rellena con crema.|Baña con chocolate derretido."],
+        ["Éclairs", 260, "g", "Agua:250 ml;Mantequilla:100 g;Harina de trigo:150 g;Huevos:4 unidades;Leche:400 ml;Yemas:4 unidades;Azúcar:100 g;Chocolate semiamargo:150 g", "Prepara la masa choux y dosifica barritas.|Hornea 30 minutos a 190 °C.|Cocina leche, yemas y azúcar para la crema pastelera y rellena.|Cubre con chocolate derretido."],
+        ["Mochi", 110, "g", "Harina de arroz glutinoso:150 g;Azúcar:50 g;Agua:200 ml;Maicena:50 g;Pasta de frejol dulce:200 g", "Mezcla harina, azúcar y agua y cocina al microondas 3 minutos, removiendo.|Estira sobre maicena y corta cuadrados.|Rellena con la pasta de frejol y cierra."],
+        ["Baklava", 380, "t", "Masa filo:300 g;Nueces:300 g;Mantequilla derretida:200 g;Azúcar:200 g;Agua:200 ml;Miel:100 g;Canela molida:1 cdta", "Mezcla las nueces con la canela.|Arma capas de filo con mantequilla y nueces.|Corta rombos y hornea 40 minutos a 170 °C.|Baña con el almíbar de azúcar, agua y miel."],
+        ["Churros", 280, "g", "Agua:250 ml;Mantequilla:50 g;Harina de trigo:150 g;Sal:1 pizca;Huevos:2 unidades;Azúcar:80 g;Aceite para freír:1 L;Canela molida:1 cdta", "Hierve agua con mantequilla y sal; añade la harina.|Incorpora los huevos y llena una manga con boquilla de estrella.|Fríe tiras hasta dorar.|Pasa por azúcar con canela."],
+        ["Waffles Belgas", 300, "g", "Harina de trigo:250 g;Leche:300 ml;Huevos:2 unidades;Mantequilla derretida:80 g;Azúcar:40 g;Polvo de hornear:2 cdtas;Levadura seca:7 g", "Mezcla los secos y agrega leche, huevos y mantequilla.|Deja reposar 30 minutos.|Cocina en la wafflera 4 minutos hasta dorar."],
+        ["Strudel de Manzana", 310, "p", "Masa filo:300 g;Manzana:5 unidades;Pasas:50 g;Nueces:60 g;Azúcar:80 g;Canela molida:2 cdtas;Mantequilla derretida:80 g", "Mezcla manzana en cubos con pasas, nueces, azúcar y canela.|Extiende capas de filo con mantequilla y coloca el relleno.|Enrolla y hornea 35 minutos a 190 °C."],
+        ["Flan de Caramelo", 290, "f", "Leche:500 ml;Huevos:4 unidades;Azúcar:100 g;Esencia de vainilla:1 cdta;Azúcar para caramelo:100 g", "Haz el caramelo y cubre el molde.|Licúa leche, huevos, azúcar y vainilla.|Hornea a baño maría 45 minutos a 170 °C.|Enfría y voltea."]
+    ])];
+const ALL = [...TORTAS, ...PANES, ...PIES, ...PERU, ...INTL].map((r, i) => ({ ...r, id: "r" + i }));
+const CC = [["#DB2777", "#F9A8D4"], ["#D97706", "#FCD34D"], ["#7C3AED", "#C4B5FD"], ["#0D9488", "#99F6E4"], ["#E11D48", "#FDA4AF"]];
+const pal = n => { n = n.toLowerCase(); return /chocolate|brownie|selva|moka|café|éclair|profiter|cookies|churros|brûlée|ranfa/.test(n) ? ["#5b2e1a", "#a8693f"] : /fresa|red velvet|frutos|mora|cereza|morada/.test(n) ? ["#d6455d", "#f7a8b5"] : /limón|maracuy|naranja|zanahoria|lúcuma|zapallo|dorayaki|baklava|chuta|flan|turrón|picar|alfajor|asada|leche/.test(n) ? ["#e0a21b", "#f8d97c"] : /chirimoya|aceituna|menta|palta|choclo/.test(n) ? ["#6f9a52", "#cfe3b0"] : ["#c9833a", "#f1cf9a"]; };
+const mixc = (c, t, a) => { const n = (h, i) => parseInt(h.slice(i, i + 2), 16); return "#" + [1, 3, 5].map(i => Math.round(n(c, i) * (1 - a) + n(t, i) * a).toString(16).padStart(2, "0")).join(""); };
+function Dona({ parts, centro }) {
+    const id = React.useId().replace(/:/g, ""), tot = parts.reduce((s, p) => s + Math.max(p.v, 0), 0);
+    if (tot <= 0)
+        return React.createElement("p", { className: "text-sm text-choco/60" }, "A\u00FAn no hay datos para el gr\u00E1fico.");
+    let acc = 0;
+    return (React.createElement("div", { className: "flex flex-col sm:flex-row items-center gap-4" },
+        React.createElement("svg", { viewBox: "0 0 42 42", className: "w-44 h-44 -rotate-90 shrink-0", style: { filter: "drop-shadow(0 3px 4px #2C181022)" }, role: "img", "aria-label": "Gr\u00E1fico circular" },
+            React.createElement("defs", null, parts.map((p, i) => React.createElement("linearGradient", { key: i, id: id + i, x1: "0", y1: "0", x2: "1", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: mixc(p.c, "#ffffff", .5) }),
+                React.createElement("stop", { offset: "1", stopColor: p.c })))),
+            React.createElement("circle", { cx: "21", cy: "21", r: "15.9155", fill: "none", stroke: "#f3e8dc", strokeWidth: "7.5" }),
+            parts.map((p, i) => { const v = Math.max(p.v, 0), len = v / tot * 100, off = -acc; acc += len; return v > 0 ? React.createElement("circle", { key: p.n, cx: "21", cy: "21", r: "15.9155", fill: "none", stroke: `url(#${id}${i})`, strokeWidth: "7.5", strokeDasharray: `${Math.max(len - .7, 0)} ${100 - len + .7}`, strokeDashoffset: off }) : null; }),
+            React.createElement("circle", { cx: "21", cy: "21", r: "10.2", fill: "#fff" }),
+            React.createElement("g", { className: "rotate-90", style: { transformOrigin: "21px 21px" } },
+                React.createElement("text", { x: "21", y: "20", textAnchor: "middle", fontSize: "2.5", fill: "#6b5a50" }, centro[0]),
+                React.createElement("text", { x: "21", y: "24.5", textAnchor: "middle", fontSize: "3.3", fontWeight: "800", fill: "#2C1810" }, centro[1]))),
+        React.createElement("ul", { className: "w-full text-sm space-y-1" }, parts.map(p => React.createElement("li", { key: p.n, className: "flex items-center justify-between gap-2 rounded-lg px-2 py-1", style: { background: p.c + "14" } },
+            React.createElement("span", { className: "flex items-center gap-2" },
+                React.createElement("i", { className: "w-3.5 h-3.5 rounded-full inline-block", style: { background: `linear-gradient(135deg,${mixc(p.c, "#ffffff", .5)},${p.c})` } }),
+                p.n),
+            React.createElement("b", { style: { color: p.c } },
+                Math.round(Math.max(p.v, 0) / tot * 100),
+                "% \u00B7 ",
+                S(p.v)))))));
+}
+function BarrasG({ datos, hl, pie }) {
+    const id = React.useId().replace(/:/g, ""), max = Math.max(...datos.map(d => Math.max(d.v, 0)), 1), w = 280 / datos.length;
+    const col = (d, i) => d.v < 0 ? "#E11D48" : String(hl) === d.n ? "#10B981" : ["#D97706", "#7C3AED", "#2F7FA3", "#EC4899", "#14B8A6", "#EAB308"][i % 6];
+    return (React.createElement("div", null,
+        React.createElement("svg", { viewBox: "0 0 300 175", className: "w-full", role: "img", "aria-label": "Gr\u00E1fico de barras" },
+            React.createElement("defs", null, datos.map((d, i) => React.createElement("linearGradient", { key: i, id: id + i, x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: mixc(col(d, i), "#ffffff", .4) }),
+                React.createElement("stop", { offset: "1", stopColor: col(d, i) })))),
+            [0, 1, 2, 3].map(k => React.createElement("line", { key: k, x1: "10", x2: "290", y1: 140 - k * 33, y2: 140 - k * 33, stroke: "#2C1810", strokeOpacity: k ? .08 : .3, strokeDasharray: k ? "3 4" : "" })),
+            datos.map((d, i) => {
+                const h = Math.max(d.v, 0) / max * 100, x = 10 + i * w + w * .15, bw = w * .7, c = col(d, i), t = S(d.v);
+                return (React.createElement("g", { key: d.n },
+                    React.createElement("rect", { x: x, y: 140 - h, width: bw, height: h, rx: "6", fill: `url(#${id}${i})` }),
+                    React.createElement("rect", { x: x + bw / 2 - 25, y: 140 - h - 18, width: "50", height: "14", rx: "7", fill: "#fff", stroke: c }),
+                    React.createElement("text", { x: x + bw / 2, y: 140 - h - 8, textAnchor: "middle", fontSize: "8.5", fontWeight: "800", fill: c }, t),
+                    React.createElement("text", { x: x + bw / 2, y: "156", textAnchor: "middle", fontSize: "9", fill: "#2C1810" }, d.n)));
+            })),
+        React.createElement("p", { className: "text-xs text-center text-choco/60" }, pie)));
+}
+/* ---------- ILUSTRACIONES (SVG) ---------- */
+function Arte({ r }) {
+    const [m, l] = pal(r.n), d = mixc(m, "#000000", .22), dl = mixc(l, "#000000", .12), hl = mixc(l, "#ffffff", .55);
+    const plate = React.createElement("g", null,
+        React.createElement("ellipse", { cx: "120", cy: "146", rx: "108", ry: "10", fill: "#00000014" }),
+        React.createElement("ellipse", { cx: "120", cy: "140", rx: "108", ry: "15", fill: "#fff", stroke: "#e8dccb" }),
+        React.createElement("ellipse", { cx: "120", cy: "139", rx: "84", ry: "10", fill: "#f6efe4" }));
+    const berry = (x, y, c = "#E11D48") => React.createElement("g", { key: x + "" + y },
+        React.createElement("circle", { cx: x, cy: y, r: "9", fill: c }),
+        React.createElement("circle", { cx: x - 3, cy: y - 3, r: "2.6", fill: "#fff", opacity: ".75" }),
+        React.createElement("path", { d: `M${x} ${y - 9}q5-8 11-5`, stroke: "#3f8f4a", strokeWidth: "2.2", fill: "none", strokeLinecap: "round" }));
+    const G = {
+        t: React.createElement("g", null,
+            plate,
+            React.createElement("rect", { x: "48", y: "98", width: "144", height: "38", rx: "10", fill: "url(#gm)" }),
+            React.createElement("rect", { x: "48", y: "90", width: "144", height: "10", fill: "#fff6e6" }),
+            React.createElement("rect", { x: "48", y: "64", width: "144", height: "28", rx: "10", fill: "url(#gm)" }),
+            React.createElement("rect", { x: "42", y: "52", width: "156", height: "20", rx: "10", fill: "url(#gl)" }),
+            [58, 84, 110, 136, 162].map((x, i) => React.createElement("path", { key: x, d: `M${x} 68q10 ${14 + i % 2 * 7} 20 0z`, fill: l })),
+            React.createElement("ellipse", { cx: "120", cy: "52", rx: "76", ry: "10", fill: hl }),
+            [[86, 44], [120, 38], [154, 44]].map(([x, y]) => berry(x, y)),
+            [[70, 80], [100, 118], [150, 112], [176, 82]].map(([x, y], i) => React.createElement("circle", { key: i, cx: x, cy: y, r: "2.2", fill: "#ffffff55" }))),
+        p: React.createElement("g", null,
+            plate,
+            React.createElement("ellipse", { cx: "120", cy: "100", rx: "100", ry: "38", fill: "#b87a3d" }),
+            React.createElement("ellipse", { cx: "120", cy: "95", rx: "100", ry: "37", fill: "url(#gcr)" }),
+            Array.from({ length: 22 }).map((_, i) => React.createElement("circle", { key: i, cx: 120 + 98 * Math.cos(i / 22 * 6.283), cy: 95 + 36 * Math.sin(i / 22 * 6.283), r: "5", fill: "#e9b873", stroke: "#c98c4d" })),
+            React.createElement("ellipse", { cx: "120", cy: "94", rx: "80", ry: "28", fill: "url(#gl)" }),
+            React.createElement("g", { clipPath: "url(#cpi)" },
+                [-60, -30, 0, 30, 60].map(k => React.createElement("path", { key: k, d: `M${60 + k} 60L${160 + k} 130`, stroke: "#e9b873", strokeWidth: "7" })),
+                [-60, -30, 0, 30, 60].map(k => React.createElement("path", { key: "b" + k, d: `M${180 + k} 60L${80 + k} 130`, stroke: "#d9a35e", strokeWidth: "7" }))),
+            React.createElement("ellipse", { cx: "108", cy: "84", rx: "30", ry: "6", fill: "#ffffff55" })),
+        b: React.createElement("g", null,
+            plate,
+            React.createElement("path", { d: "M32 122Q28 62 120 58Q212 62 208 122Q208 136 190 136L50 136Q32 136 32 122Z", fill: "url(#gpan)" }),
+            React.createElement("path", { d: "M46 104Q120 40 194 104", fill: "none", stroke: "#f6d49a", strokeWidth: "7", strokeLinecap: "round", opacity: ".55" }),
+            [70, 104, 138].map(x => React.createElement("path", { key: x, d: `M${x} 90q12-14 26 8`, stroke: "#fbe6bd", strokeWidth: "7", strokeLinecap: "round", fill: "none" })),
+            [[60, 120], [90, 126], [150, 124], [178, 116], [120, 74]].map(([x, y], i) => React.createElement("circle", { key: i, cx: x, cy: y, r: "2", fill: "#fff", opacity: ".7" }))),
+        c: React.createElement("g", null,
+            plate,
+            React.createElement("path", { d: "M72 28h96l-8 102q-1 8-9 8H89q-8 0-9-8z", fill: "#ffffff80" }),
+            React.createElement("g", { clipPath: "url(#cg)" },
+                React.createElement("rect", { x: "60", y: "106", width: "120", height: "34", fill: "url(#gm)" }),
+                React.createElement("rect", { x: "60", y: "90", width: "120", height: "16", fill: "#fff6e6" }),
+                React.createElement("rect", { x: "60", y: "72", width: "120", height: "18", fill: "url(#gl)" }),
+                React.createElement("rect", { x: "60", y: "58", width: "120", height: "14", fill: "#fff6e6" }),
+                React.createElement("rect", { x: "60", y: "38", width: "120", height: "20", fill: "url(#gm)" }),
+                React.createElement("rect", { x: "80", y: "34", width: "9", height: "100", fill: "#fff", opacity: ".35" })),
+            React.createElement("path", { d: "M72 28h96l-8 102q-1 8-9 8H89q-8 0-9-8z", fill: "none", stroke: "#d7cbbb", strokeWidth: "3" }),
+            React.createElement("ellipse", { cx: "120", cy: "30", rx: "48", ry: "8", fill: "#fff6e6", stroke: "#eadfce" }),
+            berry(120, 22),
+            [96, 112, 128, 146].map((x, i) => React.createElement("circle", { key: i, cx: x, cy: 32 + i % 2 * 2, r: "1.8", fill: d }))),
+        g: React.createElement("g", null,
+            plate,
+            [[78, 112, 33], [142, 106, 37], [112, 66, 31]].map(([x, y, rr], i) => React.createElement("g", { key: i },
+                React.createElement("circle", { cx: x, cy: y + 3, r: rr, fill: "#00000012" }),
+                React.createElement("circle", { cx: x, cy: y, r: rr, fill: "url(#gl)" }),
+                React.createElement("circle", { cx: x, cy: y, r: rr, fill: "none", stroke: m, strokeWidth: "2.5" }),
+                [[-12, -8], [10, -12], [4, 12], [-10, 10], [14, 6]].map(([a, b], j) => React.createElement("circle", { key: j, cx: x + a * rr / 34, cy: y + b * rr / 34, r: "4.3", fill: d })),
+                React.createElement("ellipse", { cx: x - rr * .3, cy: y - rr * .5, rx: rr * .35, ry: rr * .15, fill: "#ffffff55" })))),
+        f: React.createElement("g", null,
+            plate,
+            React.createElement("path", { d: "M50 124Q50 56 120 56Q190 56 190 124Z", fill: "url(#gl)" }),
+            React.createElement("path", { d: "M58 90Q120 36 182 90Q174 114 162 98Q152 122 138 100Q124 126 112 100Q100 122 88 100Q74 118 58 90Z", fill: m, opacity: ".92" }),
+            React.createElement("ellipse", { cx: "96", cy: "76", rx: "16", ry: "7", fill: "#ffffff66", transform: "rotate(-25 96 76)" }),
+            React.createElement("ellipse", { cx: "120", cy: "127", rx: "76", ry: "7", fill: m, opacity: ".55" }),
+            React.createElement("path", { d: "M118 52q-10-16 6-22 4 12-6 22zM124 52q12-12 20-4-6 12-20 4z", fill: "#3f8f4a" })),
+    };
+    return (React.createElement("svg", { viewBox: "0 0 240 160", className: "w-full h-full", role: "img", "aria-label": "Ilustración de " + r.n },
+        React.createElement("defs", null,
+            React.createElement("linearGradient", { id: "bgp", x1: "0", y1: "0", x2: "1", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: "#fff6ea" }),
+                React.createElement("stop", { offset: "1", stopColor: "#f9cfd8" })),
+            React.createElement("linearGradient", { id: "gm", x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: m }),
+                React.createElement("stop", { offset: "1", stopColor: d })),
+            React.createElement("linearGradient", { id: "gl", x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: hl }),
+                React.createElement("stop", { offset: "1", stopColor: dl })),
+            React.createElement("linearGradient", { id: "gpan", x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: "#ecb164" }),
+                React.createElement("stop", { offset: "1", stopColor: "#b86f2c" })),
+            React.createElement("linearGradient", { id: "gcr", x1: "0", y1: "0", x2: "0", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: "#f0c183" }),
+                React.createElement("stop", { offset: "1", stopColor: "#cf9350" })),
+            React.createElement("clipPath", { id: "cpi" },
+                React.createElement("ellipse", { cx: "120", cy: "94", rx: "80", ry: "28" })),
+            React.createElement("clipPath", { id: "cg" },
+                React.createElement("path", { d: "M72 28h96l-8 102q-1 8-9 8H89q-8 0-9-8z" }))),
+        React.createElement("rect", { width: "240", height: "160", fill: "url(#bgp)" }),
+        React.createElement("circle", { cx: "26", cy: "30", r: "38", fill: "#fff", opacity: ".35" }),
+        React.createElement("circle", { cx: "214", cy: "40", r: "30", fill: "#fff", opacity: ".28" }),
+        React.createElement("circle", { cx: "200", cy: "130", r: "22", fill: "#fff", opacity: ".2" }),
+        G[r.t] || G.t));
+}
+function Ico({ n }) {
+    const x = n.toLowerCase();
+    if (/harina|maicena|avena|quinua|arroz|centeno/.test(x))
+        return React.createElement("g", null,
+            React.createElement("path", { d: "M14 18h32l4 36H10z", fill: "#f4ead8", stroke: "#b69767", strokeWidth: "2" }),
+            React.createElement("path", { d: "M18 18q12-12 24 0", fill: "none", stroke: "#b69767", strokeWidth: "2" }),
+            React.createElement("circle", { cx: "30", cy: "38", r: "6", fill: "#e6d3ae" }));
+    if (/azúcar|^sal|sal gruesa|bicarbonato|polvo/.test(x))
+        return React.createElement("g", null,
+            React.createElement("rect", { x: "16", y: "20", width: "28", height: "34", rx: "5", fill: "#fff", stroke: "#9aa5ad", strokeWidth: "2" }),
+            React.createElement("rect", { x: "14", y: "12", width: "32", height: "9", rx: "3", fill: "#9aa5ad" }),
+            [24, 32, 38, 28, 36].map((a, i) => React.createElement("circle", { key: i, cx: a, cy: 30 + i * 4, r: "1.6", fill: "#cfd6db" })));
+    if (/miel|chancaca|jarabe|manjar|mermelada|salsa|pasta|anko|ganache/.test(x))
+        return React.createElement("g", null,
+            React.createElement("rect", { x: "15", y: "20", width: "30", height: "34", rx: "6", fill: "#d9892b" }),
+            React.createElement("rect", { x: "13", y: "12", width: "34", height: "9", rx: "3", fill: "#8a4b14" }),
+            React.createElement("rect", { x: "20", y: "30", width: "20", height: "12", rx: "3", fill: "#f2c66d" }));
+    if (/huevo|yema|clara/.test(x))
+        return React.createElement("g", null,
+            React.createElement("ellipse", { cx: "22", cy: "34", rx: "12", ry: "16", fill: "#f3d9b1", stroke: "#d1a96a", strokeWidth: "2" }),
+            React.createElement("ellipse", { cx: "40", cy: "38", rx: "12", ry: "16", fill: "#f8e6c6", stroke: "#d1a96a", strokeWidth: "2" }));
+    if (/mantequilla|queso|mascarpone|manteca|margarina/.test(x))
+        return React.createElement("g", null,
+            React.createElement("path", { d: "M8 30l14-10h34v22L42 52H8z", fill: "#f6d96b", stroke: "#d1b23f", strokeWidth: "2" }),
+            React.createElement("path", { d: "M8 30h34v22M42 30l14-10", fill: "none", stroke: "#d1b23f", strokeWidth: "2" }));
+    if (/chocolate|cacao|chispas/.test(x))
+        return React.createElement("g", null,
+            React.createElement("rect", { x: "12", y: "12", width: "36", height: "42", rx: "4", fill: "#5b2e1a" }),
+            [0, 1, 2].map(i => [0, 1].map(j => React.createElement("rect", { key: i + "" + j, x: 16 + j * 16, y: 16 + i * 12, width: "12", height: "9", rx: "2", fill: "#7a4428" }))));
+    if (/nuez|nueces|almendra|pecana|pistacho|ajonjol|coco|maní/.test(x))
+        return React.createElement("g", null,
+            React.createElement("ellipse", { cx: "30", cy: "34", rx: "20", ry: "16", fill: "#b9854f", stroke: "#8a5e30", strokeWidth: "2" }),
+            React.createElement("path", { d: "M18 30q12 14 24 0", fill: "none", stroke: "#8a5e30", strokeWidth: "2" }));
+    if (/leche|crema|yogur|agua|jugo|café|aceite|oporto|pisco/.test(x)) {
+        const c = /café/.test(x) ? "#6b3a1e" : /aceite/.test(x) ? "#e0b43a" : /jugo/.test(x) ? "#f08a24" : /agua/.test(x) ? "#bfe3f5" : "#fbfbf6";
+        return React.createElement("g", null,
+            React.createElement("path", { d: "M24 8h12v10l8 10v26H16V28l8-10z", fill: c, stroke: "#9aa5ad", strokeWidth: "2" }),
+            React.createElement("rect", { x: "22", y: "5", width: "16", height: "5", rx: "2", fill: "#9aa5ad" }));
+    }
+    if (/fresa|mora|cereza|frutos|higo|limón|naranja|maracuy|durazno|zapallo|zanahoria|manzana|plátano|palta|pulpa|piña|membrillo|choclo|camote|chirimoya|cebolla|ajo|perejil|romero|orégano/.test(x)) {
+        const c = /fresa|mora|cereza|frutos|higo/.test(x) ? "#d6455d" : /limón/.test(x) ? "#f2d43a" : /manzana|palta|perejil|romero|orégano|chirimoya/.test(x) ? "#7aa05a" : /plátano/.test(x) ? "#f1d35c" : "#f08a24";
+        return React.createElement("g", null,
+            React.createElement("circle", { cx: "30", cy: "34", r: "19", fill: c, stroke: "#00000022", strokeWidth: "2" }),
+            React.createElement("path", { d: "M30 15q4-9 12-8-2 8-12 8z", fill: "#5f9a3c" }),
+            React.createElement("circle", { cx: "24", cy: "28", r: "4", fill: "#ffffff55" }));
+    }
+    return React.createElement("g", null,
+        React.createElement("path", { d: "M8 30h44a22 22 0 0 1-44 0z", fill: "#e9c9a3", stroke: "#b8935f", strokeWidth: "2" }),
+        React.createElement("ellipse", { cx: "30", cy: "30", rx: "22", ry: "6", fill: "#f6e2c4" }));
+}
+function Ingredientes({ ing }) {
+    const rows = Math.ceil(ing.length / 4), H = rows * 108 + 8;
+    return (React.createElement("svg", { viewBox: `0 0 360 ${H}`, className: "w-full rounded-2xl", role: "img", "aria-label": "Ingredientes de la receta" },
+        React.createElement("defs", null,
+            React.createElement("linearGradient", { id: "wood", x1: "0", y1: "0", x2: "1", y2: "1" },
+                React.createElement("stop", { offset: "0", stopColor: "#ead9bd" }),
+                React.createElement("stop", { offset: "1", stopColor: "#d8bf98" }))),
+        React.createElement("rect", { width: "360", height: H, fill: "url(#wood)" }),
+        ing.map(([n, q], i) => (React.createElement("g", { key: i, transform: `translate(${(i % 4) * 90} ${Math.floor(i / 4) * 108 + 4})` },
+            React.createElement("circle", { cx: "45", cy: "34", r: "30", fill: "#fffdf9", opacity: ".8" }),
+            React.createElement("g", { transform: "translate(15 4)" },
+                React.createElement(Ico, { n: n })),
+            React.createElement("text", { x: "45", y: "82", textAnchor: "middle", fontSize: "8.5", fontWeight: "700", fill: "#2C1810" }, n.length > 17 ? n.slice(0, 16) + "…" : n),
+            React.createElement("text", { x: "45", y: "94", textAnchor: "middle", fontSize: "8.5", fill: "#7a2e12" }, q.length > 20 ? q.slice(0, 19) + "…" : q))))));
+}
+function PasoImg({ s }) {
+    const x = s.toLowerCase();
+    const k = /horne/.test(x) ? "h" : /refriger|enfr[ií]|congel|fr[ií]o/.test(x) ? "f" : /reposa|leva|doble|descansa/.test(x) ? "r" : /decor|cubre|rellen|sirve|ba[ñn]a|espolvor|unta|coloca|une /.test(x) ? "d" : /cocin|hierv|calient|derrit|fr[ií]e|ba[ñn]o mar|caramel|sofr|sancoch/.test(x) ? "c" : "m";
+    const bg = { h: "#fde8d0", f: "#d7eefb", r: "#e9e0f7", d: "#fbd5dc", c: "#fff0c2", m: "#cdefe0" }[k];
+    const I = {
+        h: React.createElement("g", null,
+            React.createElement("rect", { x: "12", y: "18", width: "56", height: "46", rx: "6", fill: "#4a3426" }),
+            React.createElement("rect", { x: "19", y: "28", width: "42", height: "28", rx: "3", fill: "#ffb347" }),
+            React.createElement("circle", { cx: "22", cy: "23", r: "2", fill: "#fff" }),
+            React.createElement("circle", { cx: "30", cy: "23", r: "2", fill: "#fff" })),
+        f: React.createElement("g", null,
+            React.createElement("rect", { x: "22", y: "10", width: "36", height: "60", rx: "5", fill: "#fff", stroke: "#6bb3d6", strokeWidth: "3" }),
+            React.createElement("line", { x1: "22", y1: "32", x2: "58", y2: "32", stroke: "#6bb3d6", strokeWidth: "3" }),
+            React.createElement("rect", { x: "50", y: "16", width: "3", height: "10", fill: "#6bb3d6" }),
+            React.createElement("rect", { x: "50", y: "38", width: "3", height: "14", fill: "#6bb3d6" })),
+        r: React.createElement("g", null,
+            React.createElement("circle", { cx: "40", cy: "40", r: "26", fill: "#fff", stroke: "#8b5fc0", strokeWidth: "3" }),
+            React.createElement("path", { d: "M40 24v17l11 7", fill: "none", stroke: "#8b5fc0", strokeWidth: "3", strokeLinecap: "round" })),
+        d: React.createElement("g", null,
+            React.createElement("path", { d: "M24 14l32 14-18 42z", fill: "#fff", stroke: "#E11D48", strokeWidth: "3" }),
+            React.createElement("path", { d: "M34 66l6 9 6-9z", fill: "#E11D48" }),
+            React.createElement("circle", { cx: "56", cy: "62", r: "4", fill: "#E11D48" }),
+            React.createElement("circle", { cx: "22", cy: "60", r: "3", fill: "#E11D48" })),
+        c: React.createElement("g", null,
+            React.createElement("rect", { x: "16", y: "38", width: "48", height: "26", rx: "6", fill: "#6b4a3a" }),
+            React.createElement("rect", { x: "12", y: "34", width: "56", height: "6", rx: "3", fill: "#3a2a22" }),
+            [28, 40, 52].map(a => React.createElement("path", { key: a, d: `M${a} 28q-6-6 0-12`, fill: "none", stroke: "#c9833a", strokeWidth: "3", strokeLinecap: "round" }))),
+        m: React.createElement("g", null,
+            React.createElement("path", { d: "M12 36h56a28 28 0 0 1-56 0z", fill: "#E11D48" }),
+            React.createElement("path", { d: "M44 8L34 36M50 10L42 36M38 10L28 36", stroke: "#6b4a3a", strokeWidth: "2.5", strokeLinecap: "round" })),
+    }[k];
+    return React.createElement("svg", { viewBox: "0 0 80 80", className: "w-20 h-20 shrink-0 rounded-2xl", style: { background: bg }, role: "img", "aria-label": "Ilustraci\u00F3n del paso" }, I);
+}
+function leerFoto(file, cb) {
+    const fr = new FileReader();
+    fr.onload = () => { const im = new Image(); im.onload = () => { const k = Math.min(1, 480 / Math.max(im.width, im.height)), c = document.createElement("canvas"); c.width = im.width * k; c.height = im.height * k; c.getContext("2d").drawImage(im, 0, 0, c.width, c.height); cb(c.toDataURL("image/jpeg", .68)); }; im.src = fr.result; };
+    fr.readAsDataURL(file);
+}
+function costoDe(r) {
+    let st = null;
+    try {
+        st = JSON.parse(localStorage.getItem("pastel:rec:" + r.id));
+    }
+    catch (e) { }
+    st = st || { lines: r.l.map(([k, q, u]) => ({ k, q, u, mi: 0, p: null })), otros: r.otros };
+    return st.lines.reduce((a, l) => { const g = ING[l.k], pu = l.p !== null && l.p !== undefined && l.p !== "" ? +l.p : g.m[l.mi][1]; return a + toBase(g, +l.q || 0, l.u) * pu; }, 0) + (+st.otros || 0);
+}
+/* ---------- CALCULADORA ---------- */
+function Receta({ r }) {
+    const [st, setSt] = useLS("pastel:rec:" + r.id, { lines: r.l.map(([k, q, u]) => ({ k, q, u, mi: 0, p: null })), porc: r.porc, otros: r.otros, margen: 50, ventas: 3, modo: "enteras" });
+    const set = f => setSt(s => ({ ...s, ...f }));
+    const up = (i, f) => set({ lines: st.lines.map((l, j) => j === i ? { ...l, ...f } : l) });
+    const pu = l => l.p !== null && l.p !== "" ? +l.p : ING[l.k].m[l.mi][1];
+    const sub = st.lines.map(l => toBase(ING[l.k], +l.q || 0, l.u) * pu(l));
+    const total = sub.reduce((a, b) => a + b, 0) + (+st.otros || 0);
+    const porc = Math.max(+st.porc || 1, 1), mg = 1 + (+st.margen || 0) / 100;
+    const cP = total / porc, pvP = cP * mg, pvE = total * mg, n = +st.ventas || 0;
+    const gan = st.modo === "enteras" ? n * (pvE - total) : n * (pvP - cP);
+    const ganE = pvE - total, otr = +st.otros || 0, ci = total - otr;
+    const uPv = st.modo === "enteras" ? pvE : pvP, uC = st.modo === "enteras" ? total : cP;
+    const barras = (st.modo === "enteras" ? [1, 2, 3, 5, 8, 12] : [4, 8, 12, 24, 36, 48]).map(k => ({ n: String(k), v: k * (uPv - uC) }));
+    const comp = [{ n: "Ingredientes", v: ci, c: "#D97706" }, { n: "Otros costos", v: otr, c: "#2C1810" }, { n: "Tu ganancia", v: Math.max(ganE, 0), c: "#10B981" }];
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "space-y-2" }, st.lines.map((l, i) => {
+            const g = ING[l.k];
+            return (React.createElement("div", { key: i, className: "rounded-xl bg-cream border border-choco/10 border-l-4 border-l-caramel p-3 grid grid-cols-2 md:grid-cols-12 gap-2 items-end" },
+                React.createElement("div", { className: "col-span-2 md:col-span-3 font-bold" }, g.n),
+                React.createElement("label", { className: "md:col-span-2 text-xs" },
+                    "Cantidad",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: l.q, onChange: e => up(i, { q: e.target.value }), className: inp })),
+                React.createElement("label", { className: "md:col-span-2 text-xs" },
+                    "Unidad",
+                    React.createElement("select", { value: l.u, onChange: e => up(i, { u: e.target.value }), className: inp }, UN[g.b].map(u => React.createElement("option", { key: u }, u)))),
+                React.createElement("label", { className: "md:col-span-2 text-xs" },
+                    "Marca",
+                    React.createElement("select", { value: l.mi, onChange: e => up(i, { mi: +e.target.value, p: null }), className: inp }, g.m.map((m, j) => React.createElement("option", { key: j, value: j }, m[0])))),
+                React.createElement("label", { className: "md:col-span-2 text-xs" },
+                    "S/ por ",
+                    BL[g.b],
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: l.p === null ? g.m[l.mi][1] : l.p, onChange: e => up(i, { p: e.target.value }), className: inp })),
+                React.createElement("div", { className: "md:col-span-1 flex items-center justify-between gap-1 text-sm font-bold" },
+                    S(sub[i]),
+                    React.createElement("button", { "aria-label": "Quitar", className: "text-rose px-1", onClick: () => set({ lines: st.lines.filter((_, j) => j !== i) }) }, "\u2715"))));
+        })),
+        React.createElement("div", { className: "flex flex-wrap gap-2" },
+            React.createElement("select", { className: inp + " !w-auto", value: "", onChange: e => e.target.value && set({ lines: [...st.lines, { k: e.target.value, q: 1, u: UN[ING[e.target.value].b][0], mi: 0, p: null }] }) },
+                React.createElement("option", { value: "" }, "+ Agregar ingrediente"),
+                Object.entries(ING).map(([k, g]) => React.createElement("option", { key: k, value: k }, g.n))),
+            React.createElement("button", { className: btn + "border border-choco/20", onClick: () => { try {
+                    localStorage.removeItem("pastel:rec:" + r.id);
+                }
+                catch (e) { } location.reload(); } }, "Restaurar receta")),
+        React.createElement("div", { className: "grid sm:grid-cols-3 gap-2" },
+            React.createElement("label", { className: "text-sm" },
+                "Porciones por torta/lote",
+                React.createElement("input", { type: "number", min: "1", value: st.porc, onChange: e => set({ porc: e.target.value }), className: inp })),
+            React.createElement("label", { className: "text-sm" },
+                "Otros costos (gas, empaque) S/",
+                React.createElement("input", { type: "number", min: "0", step: "any", value: st.otros, onChange: e => set({ otros: e.target.value }), className: inp })),
+            React.createElement("label", { className: "text-sm" },
+                "Ganancia deseada %",
+                React.createElement("input", { type: "number", min: "0", value: st.margen, onChange: e => set({ margen: e.target.value }), className: inp }),
+                React.createElement("span", { className: "flex gap-1 mt-1" }, [40, 50, 100].map(m => React.createElement("button", { key: m, onClick: () => set({ margen: m }), className: "rounded-full bg-blush px-2 text-xs font-bold" },
+                    m,
+                    "%"))))),
+        React.createElement("div", { className: "grid sm:grid-cols-4 gap-2 text-center" }, [["Costo total", S(total), "#2C1810", "#6b3a1e"], ["Costo por porción", S(cP), "#0F766E", "#2DD4BF"], ["Precio sugerido / porción", S(pvP), "#E11D48", "#FB7185"], ["Precio sugerido entero", S(pvE), "#D97706", "#FBBF24"]].map(([t, v, x, y]) => (React.createElement("div", { key: t, className: "rounded-2xl p-3 text-white shadow", style: { background: `linear-gradient(135deg,${x},${y})` } },
+            React.createElement("p", { className: "text-xs opacity-90" }, t),
+            React.createElement("p", { className: "serif text-2xl font-extrabold" }, v))))),
+        React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+            React.createElement("div", { className: "rounded-2xl p-4 border-2 border-emerald-200 bg-emerald-50" },
+                React.createElement("p", { className: "font-extrabold mb-2" }, "\u00BFC\u00F3mo se compone tu precio?"),
+                React.createElement(Dona, { parts: comp, centro: ["Precio entero", S(pvE)] }),
+                React.createElement("p", { className: "text-sm mt-2" },
+                    "Por cada S/ 1.00 que cobras, S/ ",
+                    (pvE ? ganE / pvE : 0).toFixed(2),
+                    " es tu ganancia.")),
+            React.createElement("div", { className: "rounded-2xl p-4 border-2 border-amber-200 bg-amber-50" },
+                React.createElement("p", { className: "font-extrabold mb-2" }, "Ganancia seg\u00FAn cu\u00E1nto vendes"),
+                React.createElement(BarrasG, { datos: barras, hl: n, pie: st.modo === "enteras" ? "Tortas enteras vendidas" : "Porciones vendidas" }))),
+        React.createElement("div", { className: "rounded-2xl p-4 text-white", style: { background: "linear-gradient(120deg,#2C1810,#7a2e12)" } },
+            React.createElement("p", { className: "font-extrabold mb-2" }, "Simulador de ventas"),
+            React.createElement("div", { className: "flex flex-wrap gap-2 items-center text-choco" },
+                React.createElement("span", { className: "text-white" }, "Si vendes"),
+                React.createElement("input", { type: "number", min: "0", value: st.ventas, onChange: e => set({ ventas: e.target.value }), className: inp + " !w-24", "aria-label": "Cantidad" }),
+                React.createElement("select", { value: st.modo, onChange: e => set({ modo: e.target.value }), className: inp + " !w-auto" },
+                    React.createElement("option", { value: "enteras" }, "tortas enteras"),
+                    React.createElement("option", { value: "porciones" }, "porciones"))),
+            React.createElement("p", { className: "mt-3 text-lg" },
+                "Si vendes ",
+                n,
+                " ",
+                st.modo === "enteras" ? (n === 1 ? "torta entera" : "tortas enteras") : (n === 1 ? "porción" : "porciones"),
+                ", tu ganancia neta es ",
+                React.createElement("b", { className: "serif text-3xl", style: { color: gan >= 0 ? "#6EE7B7" : "#FDA4AF" } }, S(gan))),
+            React.createElement("div", { className: "grid grid-cols-3 gap-2 mt-3 text-center text-sm" }, [["Cobras", n * uPv, "#FBBF24"], ["Gastas", n * uC, "#FDA4AF"], ["Te queda", gan, "#6EE7B7"]].map(([t, v, c]) => React.createElement("div", { key: t, className: "rounded-xl bg-white/10 p-2" },
+                React.createElement("p", { className: "opacity-80" }, t),
+                React.createElement("p", { className: "font-extrabold text-lg", style: { color: c } }, S(v))))))));
+}
+function Calculadora() {
+    const [open, setOpen] = useState(0);
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("p", { className: "text-choco/70" }, "Elige una categor\u00EDa, ajusta cantidades, marcas y precios. Todo se guarda en tu navegador."),
+        CATS.map((c, i) => (React.createElement("section", { key: c, className: card + " overflow-hidden" },
+            React.createElement("button", { className: "w-full flex items-center justify-between px-4 py-3 text-left text-white", style: { background: `linear-gradient(110deg,${CC[i][0]},${CC[i][1]})` }, "aria-expanded": open === i, onClick: () => setOpen(open === i ? -1 : i) },
+                React.createElement("span", { className: "serif text-lg font-extrabold" }, c),
+                React.createElement("span", { className: "text-2xl leading-none" }, open === i ? "−" : "+")),
+            open === i && React.createElement("div", { className: "p-4 space-y-4" }, RECS.filter(r => r.cat === i).map(r => React.createElement("div", { key: r.id },
+                React.createElement("h3", { className: "serif text-xl font-extrabold mb-2" }, r.n),
+                React.createElement(Receta, { r: r })))))))));
+}
+/* ---------- COSTEO AUTOMÁTICO DE RECETAS ---------- */
+const PR = [[/azúcar glas/, 6], [/azúcar/, 4.2], [/almendra/, 50], [/harina de arroz/, 8], [/choclo/, 6, 1.2], [/harina|maicena|avena|centeno|quinua|arroz|sémola/, 4.2], [/mantequilla|margarina/, 36], [/manteca/, 14], [/huevo/, 12, .7], [/yema|clara/, 12, .3],
+    [/leche evaporada/, 10], [/leche condensada/, 14.5], [/leche de coco/, 12], [/leche|yogur/, 4.5], [/crema de leche|crema agria/, 17], [/queso crema/, 32], [/mascarpone/, 45], [/queso/, 24], [/chocolate|cobertura/, 28], [/cacao|chispas/, 32], [/ganache/, 30],
+    [/vainilla|esencia/, 40], [/levadura/, 40], [/polvo de hornear/, 20], [/bicarbonato/, 12], [/sal gruesa|^sal/, 1.2], [/canela|clavo|anís|comino|romero|orégano|perejil/, 60], [/gelatina/, 90], [/soletilla/, 22], [/galleta/, 9], [/masa filo/, 25],
+    [/frutos rojos/, 28], [/fresa/, 9], [/mora/, 15], [/cereza/, 18], [/manzana/, 4.5, .8], [/plátano/, 5, .4], [/durazno/, 6, .8], [/limón/, 4.5, .2], [/naranja/, 3, .4], [/piña/, 3, 5], [/membrillo/, 4, 1.5], [/zapallo|zanahoria|camote/, 2.5], [/chirimoya/, 10, 3], [/higo/, 12, .8], [/cebolla/, 3, .5], [/ajo/, 14, .1],
+    [/nuez|nueces/, 45], [/pecana/, 55], [/pistacho/, 90], [/coco rallado/, 18], [/ajonjol/, 18], [/maní/, 12], [/pasas/, 14], [/aceituna/, 18], [/manjar/, 12], [/miel/, 22], [/chancaca/, 7], [/mermelada/, 9], [/pasta de frejol|anko/, 25], [/salsa/, 14],
+    [/café/, 8], [/aceite de oliva/, 25], [/aceite/, 8], [/jugo|pulpa/, 8], [/oporto/, 25], [/pisco/, 30], [/maíz morado/, 8], [/frejol/, 7], [/pan viejo/, 3], [/grageas/, 25], [/colorante/, 40], [/vinagre/, 4], [/masa madre/, 3], [/agua/, .02], [/ralladura/, 20]];
+const U = { g: .001, kg: 1, ml: .001, L: 1, unidades: 1, dientes: 1, cdas: .015, cdtas: .005, pizca: .0005, gota: .00005 };
+const parseQ = s => {
+    const m = s.match(/^([\d.\/]+)\s*(.*)$/);
+    let q = 1;
+    if (m)
+        q = m[1].includes("/") ? m[1].split("/").reduce((a, b) => a / b) : +m[1];
+    const u = (m ? m[2] : s).toLowerCase().replace(/\(.*\)/, "").trim();
+    return [q, /^(g|gr)$/.test(u) ? "g" : u === "kg" ? "kg" : u === "ml" ? "ml" : u === "l" ? "L" : /^unidad/.test(u) ? "unidades" : /^dient/.test(u) ? "dientes" : /^cda/.test(u) ? "cdas" : /^cdta/.test(u) ? "cdtas" : /^pizca/.test(u) ? "pizca" : /^gota/.test(u) ? "gota" : "g"];
+};
+const lineasDe = r => r.ing.map(([n, q]) => { const [c, u] = parseQ(q), rl = PR.find(p => p[0].test(n.toLowerCase())) || [0, 12, 1], un = u === "unidades" || u === "dientes"; return { n, q: c, u, p: un ? (rl[2] !== undefined ? rl[2] : 1) : rl[1] }; });
+const baseDe = u => u === "ml" || u === "L" ? "L" : u === "unidades" || u === "dientes" ? "unidad" : "kg";
+const kIns = l => l.n.toLowerCase() + "|" + baseDe(l.u);
+const getIns = () => { try {
+    return JSON.parse(localStorage.getItem("pastel:insumos")) || {};
+}
+catch (e) {
+    return {};
+} };
+const precioL = (l, ins) => { const v = ins[kIns(l)]; return v !== undefined && v !== "" ? +v : +l.p || 0; };
+const defSt = r => ({ lines: lineasDe(r), porc: r.por, otros: 3, merma: 10, mE: 50, mP: 100, ventas: 1, modo: "enteras", esc: "porciones", meta: r.por, m0: 22, m1: 22 });
+const facDe = st => st.esc === "molde" ? Math.pow((+st.m1 || 1) / (+st.m0 || 1), 2) : (+st.meta || 1) / (+st.porc || 1);
+const calcDe = r => { let st = null; try {
+    st = JSON.parse(localStorage.getItem("pastel:calc:" + r.id));
+}
+catch (e) { } st = { ...defSt(r), ...(st || {}) }; const ins = getIns(), f = facDe(st), ci = st.lines.reduce((a, l) => a + (+l.q || 0) * U[l.u] * precioL(l, ins), 0) * f; return { st, costo: ci * (1 + (+st.merma || 0) / 100) + (+st.otros || 0), porc: Math.max(Math.round((+st.porc || 1) * f), 1) }; };
+const INS_LISTA = (() => { const m = {}; ALL.forEach(r => lineasDe(r).forEach(l => { const k = kIns(l); if (!m[k])
+    m[k] = { k, n: l.n, base: baseDe(l.u), p: l.p, uso: 0 }; m[k].uso++; })); return Object.values(m).sort((a, b) => a.n.localeCompare(b.n)); })();
+const prem = r => /cheesecake|macaron|tiramis|red velvet|selva|croissant|brioche|baklava|éclair|profiter|strudel|tatin|crème|panna|almendras|helada/i.test(r.n) ? 1.3 : 1;
+/* ---------- TEXTOS DE CADA RECETA ---------- */
+const hash = n => [...n].reduce((a, ch) => a + ch.charCodeAt(0), 0);
+const TIPS = [
+    ["Saca los huevos y la mantequilla del refrigerador 1 hora antes: la masa se integra mejor.", "No abras el horno durante los primeros 30 minutos o la torta se hundirá.", "Pesa los ingredientes con balanza; las tazas cambian la textura.", "Para cortar porciones limpias usa un cuchillo caliente y seco."],
+    ["Usa agua tibia, no caliente: el calor excesivo mata la levadura.", "Amasa hasta pasar la prueba del velo: un trozo estirado debe verse translúcido sin romperse.", "Un recipiente con agua caliente en el horno da una corteza crujiente.", "Deja enfriar sobre una rejilla para que la corteza no se humedezca."],
+    ["Mantén la mantequilla muy fría para una masa crocante.", "Pincha el fondo con un tenedor para que no se infle al hornear.", "Deja reposar la masa en refrigeración: así se encoge menos.", "Refrigera el pie completo antes de cortarlo para lograr porciones perfectas."],
+    ["Prueba el punto de dulzor al final: las leches y la chancaca varían según la marca.", "Cocina a fuego bajo y mueve siempre para que no se pegue ni se queme.", "Sirve en vasitos individuales para vender por porciones y presentar mejor.", "Compra ingredientes locales y de temporada para bajar tus costos."],
+    ["Mide con precisión: la pastelería fina no perdona las improvisaciones.", "Respeta los tiempos de refrigeración para lograr la textura correcta.", "Una buena presentación (plato, salsa o fruta) justifica un precio más alto.", "Prepara una tanda de prueba antes de ofrecerlo a la venta."]
+];
+function extras(r) {
+    const key = r.ing.map(x => x[0].toLowerCase()).filter(n => !/^sal$|^agua|^polvo de|^esencia|^levadura|^aceite vegetal|^azúcar$|^bicarbonato/.test(n)), h = hash(r.n);
+    const frase = ["Es una masa a base de mantequilla y huevos que queda húmeda y suave. Funciona muy bien para cumpleaños, pedidos por encargo y venta por porciones en vitrina.", "Es una masa de levado clásico: con buena hidratación y los reposos respetados se logra una miga aireada y una corteza dorada. Se vende muy bien por unidades o en bolsas de varias piezas.", "La base de masa quebrada se hornea en blanco para que no se humedezca con el relleno. Usa pocos ingredientes y deja muy buen margen de ganancia.", "Es un clásico de la repostería peruana, muy pedido en fechas especiales y en puestos de postres. Su sabor casero es su mayor valor al momento de vender.", "Es una receta internacional de presentación elegante, ideal para destacar en tu carta y cobrar un precio premium por porción."][r.cat];
+    const dif = /macaron|croissant|éclair|profiter|baklava|brioche|masa madre|tatin|crème|strudel|picarones|turrón/i.test(r.n) ? ["Avanzada", "#E11D48"] : /cheesecake|tiramis|flan|panna|selva|red velvet|^pan |focaccia|baguette|ciabatta|bagels|alfajor|suspiro|pionono|mousse|dorayaki|mochi|churros|waffles/i.test(r.n) ? ["Media", "#D97706"] : ["Fácil", "#10B981"];
+    return {
+        sobre: `${r.n} rinde ${r.por} porciones de unos ${r.kcal} kcal cada una. ${frase} Sus ingredientes protagonistas son ${key.slice(-3).join(", ")}. Sigue las cantidades exactas de la lista y los pasos ilustrados para repetir el mismo resultado en cada tanda.`,
+        tiempo: ["30 min de preparación + 40 min de horneado", "30 min de trabajo + 2 h de reposo + 30 min de horno", "40 min de preparación + 2 h de refrigeración", "30 a 60 min de preparación + enfriado", "45 min a 1 h 30 min + reposo en frío"][r.cat],
+        cons: ["Dura 2 días a temperatura ambiente bien tapada y hasta 5 días refrigerada. Si lleva crema o queso, mantenla siempre en frío.", "Está en su mejor punto el mismo día. Guárdalo 2 días en bolsa de tela o congélalo hasta 1 mes.", "Refrigerada dura 3 días en un recipiente tapado. Sácala 10 minutos antes de servir.", "Guárdalo refrigerado y tapado hasta 3 días. Sírvelo frío o a temperatura ambiente según el postre.", "Refrigéralo en un recipiente hermético hasta 3 días; con crema, no lo dejes fuera de la nevera más de 2 horas."][r.cat],
+        dif, tips: [0, 1, 2].map(i => TIPS[r.cat][(h + i) % 4]),
+    };
+}
+const fmt = n => Math.round(n * 100) / 100;
+async function guardarPDF(doc, nombre) {
+    try {
+        const dl = window.claude ? await window.claude.use("downloads") : null;
+        if (dl) {
+            await dl.save({ filename: nombre, data: doc.output("blob") });
+            return;
+        }
+    }
+    catch (e) {
+        if (e && e.code === "declined")
+            return;
+    }
+    doc.save(nombre);
+}
+function CalcRecetario({ r, c }) {
+    const [st0, setSt] = useLS("pastel:calc:" + r.id, defSt(r));
+    const [ins, setIns] = useLS("pastel:insumos", {});
+    const [cli, setCli] = useState({ nombre: "", tel: "", fecha: "", cant: 1, tipo: "entera" });
+    const st = { ...defSt(r), ...st0 }, set = x => setSt(s => ({ ...defSt(r), ...s, ...x }));
+    const up = (i, x) => set({ lines: st.lines.map((l, j) => j === i ? { ...l, ...x } : l) });
+    const f = facDe(st), porc0 = Math.max(+st.porc || 1, 1), porc = Math.max(Math.round(porc0 * f), 1);
+    const ci = st.lines.reduce((a, l) => a + (+l.q || 0) * U[l.u] * precioL(l, ins), 0) * f;
+    const merma = ci * (+st.merma || 0) / 100, otros = +st.otros || 0, total = ci + merma + otros, cP = total / porc;
+    const pvE = total * (1 + (+st.mE || 0) / 100), pvP = cP * (1 + (+st.mP || 0) / 100);
+    const gE = pvE - total, gP = porc * pvP - total, n = Math.max(+st.ventas || 0, 0), g = st.modo === "enteras" ? gE : gP;
+    const lab = u => u === "unidades" || u === "dientes" ? "S/ por unidad" : u === "ml" || u === "L" ? "S/ por L" : "S/ por kg";
+    const cant = Math.max(+cli.cant || 1, 1), totCot = Math.round((cli.tipo === "entera" ? pvE : pvP) * cant * 10) / 10;
+    const detalle = `${cant} ${cli.tipo === "entera" ? (cant === 1 ? "torta entera" : "tortas enteras") : (cant === 1 ? "porción" : "porciones")} de ${r.n}`;
+    const texto = `Hola${cli.nombre ? " " + cli.nombre : ""}, esta es tu cotización:\n- Producto: ${detalle}\n- Precio total: ${S(totCot)}${cli.fecha ? "\n- Fecha de entrega: " + cli.fecha : ""}\n¡Gracias por tu preferencia!`;
+    const tel = cli.tel.replace(/\D/g, ""), waCot = `https://wa.me/${tel ? "51" + tel : ""}?text=${encodeURIComponent(texto)}`;
+    const pdfBase = () => { const d = new window.jspdf.jsPDF(); let y = 18; const ln = (t, o = {}) => { if (y > 280) {
+        d.addPage();
+        y = 18;
+    } d.setFont("helvetica", o.b ? "bold" : "normal"); d.setFontSize(o.s || 10.5); d.splitTextToSize(String(t), 180 - (o.x || 15)).forEach(x => { d.text(x, o.x || 15, y); y += o.h || 6; }); }; return [d, ln]; };
+    const fichaPDF = async () => {
+        const [d, ln] = pdfBase();
+        ln("Ficha técnica - " + r.n, { b: 1, s: 16, h: 9 });
+        ln(`Categoría: ${CATS[r.cat]} | Rinde ${porc} porciones | Factor de escala x${fmt(f)}`, { h: 9 });
+        ln("Ingredientes", { b: 1, s: 12, h: 7 });
+        st.lines.forEach(l => ln(`- ${l.n}: ${fmt((+l.q || 0) * f)} ${l.u}  (${S((+l.q || 0) * U[l.u] * precioL(l, ins) * f)})`, { x: 18, h: 5.5 }));
+        ln(`Mermas y servicios (${+st.merma || 0}%): ${S(merma)} | Otros costos: ${S(otros)}`, { h: 7 });
+        ln(`Costo total: ${S(total)} | Costo por porción: ${S(cP)}`, { b: 1 });
+        ln(`Precio sugerido entero: ${S(pvE)} | por porción: ${S(pvP)}`, { b: 1, h: 9 });
+        ln("Preparación", { b: 1, s: 12, h: 7 });
+        r.pasos.forEach((p, i) => ln(`${i + 1}. ${p}`, { x: 18, h: 5.5 }));
+        await guardarPDF(d, "ficha-" + slug(r.n) + ".pdf");
+    };
+    const cotPDF = async () => {
+        const [d, ln] = pdfBase();
+        ln("Cotización", { b: 1, s: 20, h: 12 });
+        if (cli.nombre)
+            ln("Cliente: " + cli.nombre, { s: 12, h: 8 });
+        ln("Producto: " + detalle, { s: 12, h: 8 });
+        if (cli.fecha)
+            ln("Fecha de entrega: " + cli.fecha, { s: 12, h: 8 });
+        ln("Precio total: " + S(totCot), { b: 1, s: 16, h: 12 });
+        ln("Contacto: +51 958 958 855", { s: 11 });
+        ln("Gracias por tu preferencia.", { s: 11 });
+        await guardarPDF(d, "cotizacion-" + slug(r.n) + ".pdf");
+    };
+    return (React.createElement("section", { className: "rounded-2xl overflow-hidden border-2", style: { borderColor: c[0] } },
+        React.createElement("div", { className: "p-4 text-white", style: { background: `linear-gradient(110deg,${c[0]},${c[1]})` } },
+            React.createElement("h3", { className: "serif text-2xl font-extrabold" }, "Calculadora de esta receta"),
+            React.createElement("p", { className: "text-sm opacity-90" }, "Ya viene configurada con los ingredientes de arriba. Los precios salen de tu pesta\u00F1a Insumos: si cambias uno all\u00ED, se actualiza aqu\u00ED y en todas las recetas.")),
+        React.createElement("div", { className: "p-4 space-y-3 bg-white" },
+            React.createElement("div", { className: "rounded-2xl p-3 border-2 border-violet-200 bg-violet-50 space-y-2" },
+                React.createElement("p", { className: "font-extrabold" }, "Escalar receta (molde o porciones)"),
+                React.createElement("div", { className: "flex flex-wrap gap-2 items-end" },
+                    React.createElement("select", { value: st.esc, onChange: e => set({ esc: e.target.value }), className: inp + " !w-auto", "aria-label": "Tipo de escala" },
+                        React.createElement("option", { value: "porciones" }, "Por porciones"),
+                        React.createElement("option", { value: "molde" }, "Por molde redondo (cm)")),
+                    st.esc === "porciones"
+                        ? React.createElement("label", { className: "text-xs" },
+                            "Quiero preparar (porciones)",
+                            React.createElement("input", { type: "number", min: "1", value: st.meta, onChange: e => set({ meta: e.target.value }), className: inp + " !w-32" }))
+                        : React.createElement(React.Fragment, null,
+                            React.createElement("label", { className: "text-xs" },
+                                "Molde de la receta (cm)",
+                                React.createElement("input", { type: "number", min: "1", value: st.m0, onChange: e => set({ m0: e.target.value }), className: inp + " !w-28" })),
+                            React.createElement("label", { className: "text-xs" },
+                                "Mi molde (cm)",
+                                React.createElement("input", { type: "number", min: "1", value: st.m1, onChange: e => set({ m1: e.target.value }), className: inp + " !w-28" })))),
+                React.createElement("p", { className: "text-sm" },
+                    "Factor: ",
+                    React.createElement("b", null,
+                        "x",
+                        fmt(f)),
+                    " \u00B7 Rinde ",
+                    React.createElement("b", null, porc),
+                    " porciones. Las cantidades y costos se ajustan solos.")),
+            React.createElement("div", { className: "space-y-2" }, st.lines.map((l, i) => (React.createElement("div", { key: i, className: "rounded-xl p-2 grid grid-cols-6 md:grid-cols-12 gap-2 items-end border-l-4", style: { borderColor: c[0], background: c[0] + "10" } },
+                React.createElement("label", { className: "col-span-6 md:col-span-3 text-xs" },
+                    "Ingrediente",
+                    React.createElement("input", { value: l.n, onChange: e => up(i, { n: e.target.value }), className: inp })),
+                React.createElement("label", { className: "col-span-2 md:col-span-2 text-xs" },
+                    "Cantidad",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: l.q, onChange: e => up(i, { q: e.target.value }), className: inp }),
+                    React.createElement("span", { className: "text-[11px] text-choco/60" },
+                        "Para ti: ",
+                        fmt((+l.q || 0) * f),
+                        " ",
+                        l.u)),
+                React.createElement("label", { className: "col-span-2 md:col-span-2 text-xs" },
+                    "Unidad",
+                    React.createElement("select", { value: l.u, onChange: e => up(i, { u: e.target.value }), className: inp }, Object.keys(U).map(u => React.createElement("option", { key: u }, u)))),
+                React.createElement("label", { className: "col-span-2 md:col-span-2 text-xs" },
+                    lab(l.u),
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: ins[kIns(l)] !== undefined ? ins[kIns(l)] : l.p, onChange: e => setIns(o => ({ ...o, [kIns(l)]: e.target.value })), className: inp })),
+                React.createElement("div", { className: "col-span-6 md:col-span-3 flex items-center justify-between font-bold" },
+                    S((+l.q || 0) * U[l.u] * precioL(l, ins) * f),
+                    React.createElement("button", { "aria-label": "Quitar", className: "text-rose px-2", onClick: () => set({ lines: st.lines.filter((_, j) => j !== i) }) }, "\u2715")))))),
+            React.createElement("div", { className: "flex flex-wrap gap-2" },
+                React.createElement("button", { className: btn + "text-white", style: { background: c[0] }, onClick: () => set({ lines: [...st.lines, { n: "Nuevo ingrediente", q: 1, u: "g", p: 10 }] }) }, "+ Agregar ingrediente"),
+                React.createElement("button", { className: btn + "border-2", style: { borderColor: c[0], color: c[0] }, onClick: () => setSt(defSt(r)) }, "Restaurar valores de la receta")),
+            React.createElement("div", { className: "grid sm:grid-cols-5 gap-2" },
+                React.createElement("label", { className: "text-sm font-bold" },
+                    "Porciones (receta original)",
+                    React.createElement("input", { type: "number", min: "1", value: st.porc, onChange: e => set({ porc: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm font-bold" },
+                    "Otros costos (S/)",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: st.otros, onChange: e => set({ otros: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm font-bold", style: { color: "#0F766E" } },
+                    "Mermas y servicios (%)",
+                    React.createElement("input", { type: "number", min: "0", value: st.merma, onChange: e => set({ merma: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm font-bold", style: { color: "#D97706" } },
+                    "Ganancia entero (%)",
+                    React.createElement("input", { type: "number", min: "0", value: st.mE, onChange: e => set({ mE: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm font-bold", style: { color: "#E11D48" } },
+                    "Ganancia porci\u00F3n (%)",
+                    React.createElement("input", { type: "number", min: "0", value: st.mP, onChange: e => set({ mP: e.target.value }), className: inp }))),
+            React.createElement("p", { className: "text-xs text-choco/70" }, "Mermas y servicios cubre luz, gas, desgaste de equipos y desperdicio (se suma un % al costo de ingredientes; lo normal es 10% a 15%)."),
+            React.createElement("p", { className: "text-sm" },
+                "Ingredientes ",
+                S(ci),
+                " + mermas y servicios ",
+                S(merma),
+                " + otros ",
+                S(otros),
+                " = ",
+                React.createElement("b", null, S(total))),
+            React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-3 gap-2 text-center" }, [["Costo total", S(total), "#2C1810", "#6b3a1e"], ["Costo por porción", S(cP), "#0F766E", "#2DD4BF"], ["Precio entero sugerido", S(pvE), "#D97706", "#FBBF24"], ["Precio por porción sugerido", S(pvP), "#E11D48", "#FB7185"], ["Ganancia vendiendo entero", S(gE), "#059669", "#6EE7B7"], ["Ganancia vendiendo todo en porciones", S(gP), "#7C3AED", "#C4B5FD"]].map(([t, v, a, b]) => (React.createElement("div", { key: t, className: "rounded-2xl p-3 text-white shadow", style: { background: `linear-gradient(135deg,${a},${b})` } },
+                React.createElement("p", { className: "text-xs opacity-90" }, t),
+                React.createElement("p", { className: "serif text-2xl font-extrabold" }, v))))),
+            React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+                React.createElement("div", { className: "rounded-2xl p-4 border-2 border-amber-200 bg-amber-50" },
+                    React.createElement("p", { className: "font-extrabold mb-2" }, "\u00BFEntero o por porciones?"),
+                    React.createElement(BarrasG, { datos: [{ n: "Entero", v: gE }, { n: "Porciones", v: gP }], hl: gP >= gE ? "Porciones" : "Entero", pie: "Ganancia por cada tanda de esta receta" })),
+                React.createElement("div", { className: "rounded-2xl p-4 border-2 border-emerald-200 bg-emerald-50" },
+                    React.createElement("p", { className: "font-extrabold mb-2" }, "\u00BFC\u00F3mo se reparte lo que cobras?"),
+                    React.createElement(Dona, { parts: [{ n: "Ingredientes", v: ci * n, c: "#D97706" }, { n: "Mermas y servicios", v: merma * n, c: "#14B8A6" }, { n: "Otros costos", v: otros * n, c: "#2C1810" }, { n: "Tu ganancia", v: Math.max(g * n, 0), c: "#10B981" }], centro: ["Cobras", S((total + g) * n)] }))),
+            React.createElement("div", { className: "rounded-2xl p-4 text-white", style: { background: "linear-gradient(120deg,#2C1810,#7a2e12)" } },
+                React.createElement("p", { className: "font-extrabold mb-2" }, "Simulador de ventas"),
+                React.createElement("div", { className: "flex flex-wrap gap-2 items-center text-choco" },
+                    React.createElement("span", { className: "text-white" }, "Si preparas"),
+                    React.createElement("input", { type: "number", min: "0", value: st.ventas, onChange: e => set({ ventas: e.target.value }), className: inp + " !w-24", "aria-label": "Cantidad de tandas" }),
+                    React.createElement("span", { className: "text-white" }, "tandas y las vendes"),
+                    React.createElement("select", { value: st.modo, onChange: e => set({ modo: e.target.value }), className: inp + " !w-auto" },
+                        React.createElement("option", { value: "enteras" }, "enteras"),
+                        React.createElement("option", { value: "porciones" }, "en porciones"))),
+                React.createElement("p", { className: "mt-3 text-lg" },
+                    "Si vendes ",
+                    n,
+                    " ",
+                    n === 1 ? "tanda" : "tandas",
+                    " ",
+                    st.modo === "enteras" ? "enteras" : "en porciones",
+                    ", tu ganancia neta es ",
+                    React.createElement("b", { className: "serif text-3xl", style: { color: g >= 0 ? "#6EE7B7" : "#FDA4AF" } }, S(g * n)))),
+            React.createElement("div", { className: "rounded-2xl p-4 border-2 border-emerald-300 bg-emerald-50 space-y-2" },
+                React.createElement("p", { className: "font-extrabold" }, "Cotizar para un cliente"),
+                React.createElement("div", { className: "grid sm:grid-cols-5 gap-2" },
+                    React.createElement("input", { className: inp, placeholder: "Nombre del cliente", value: cli.nombre, onChange: e => setCli({ ...cli, nombre: e.target.value }), "aria-label": "Nombre del cliente" }),
+                    React.createElement("input", { className: inp, inputMode: "numeric", placeholder: "Celular (opcional)", value: cli.tel, onChange: e => setCli({ ...cli, tel: e.target.value }), "aria-label": "Celular del cliente" }),
+                    React.createElement("input", { className: inp, type: "date", value: cli.fecha, onChange: e => setCli({ ...cli, fecha: e.target.value }), "aria-label": "Fecha de entrega" }),
+                    React.createElement("select", { className: inp, value: cli.tipo, onChange: e => setCli({ ...cli, tipo: e.target.value }), "aria-label": "Tipo de venta" },
+                        React.createElement("option", { value: "entera" }, "Tortas enteras"),
+                        React.createElement("option", { value: "porcion" }, "Porciones")),
+                    React.createElement("input", { className: inp, type: "number", min: "1", value: cli.cant, onChange: e => setCli({ ...cli, cant: e.target.value }), "aria-label": "Cantidad" })),
+                React.createElement("p", { className: "text-sm" },
+                    "Precio para el cliente: ",
+                    React.createElement("b", { className: "serif text-xl" }, S(totCot)),
+                    " ",
+                    React.createElement("span", { className: "text-choco/60" },
+                        "(",
+                        detalle,
+                        "; no muestra tus costos)")),
+                React.createElement("div", { className: "flex flex-wrap gap-2" },
+                    React.createElement("button", { className: btn + "bg-gradient-to-r from-pink-500 to-violet-500 text-white", onClick: cotPDF }, "Cotizaci\u00F3n en PDF"),
+                    React.createElement("a", { className: btn + "bg-emerald-600 text-white", href: waCot, target: "_blank", rel: "noreferrer" }, "Enviar cotizaci\u00F3n por WhatsApp"))),
+            React.createElement("button", { className: btn + "w-full text-white", style: { background: `linear-gradient(110deg,${c[0]},${c[1]})` }, onClick: fichaPDF }, "Exportar ficha t\u00E9cnica (PDF)"))));
+}
+function Insumos() {
+    const [ins, setIns] = useLS("pastel:insumos", {}), [q, setQ] = useState("");
+    const lista = INS_LISTA.filter(x => x.n.toLowerCase().includes(q.toLowerCase()));
+    const un = b => b === "unidad" ? "por unidad" : "por " + b;
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "rounded-3xl p-5 text-white", style: { background: "linear-gradient(120deg,#0F766E,#10B981 60%,#D97706)" } },
+            React.createElement("h2", { className: "serif text-2xl font-extrabold" }, "Lista de insumos"),
+            React.createElement("p", { className: "text-sm opacity-95 mt-1" }, "Cambia aqu\u00ED el precio de un insumo (por ejemplo el kilo de harina o la unidad de huevo) y se recalcula el costo y el precio sugerido de TODAS las recetas y del ranking.")),
+        React.createElement("div", { className: "flex flex-wrap gap-2" },
+            React.createElement("input", { className: inp + " !w-auto flex-1 min-w-[200px]", placeholder: "Buscar insumo (ej: harina, huevo)", value: q, onChange: e => setQ(e.target.value), "aria-label": "Buscar insumo" }),
+            React.createElement("button", { className: btn + "border-2 border-rose text-rose", onClick: () => { if (confirm("¿Volver a los precios de mercado de referencia?"))
+                    setIns({}); } }, "Restablecer precios")),
+        React.createElement("p", { className: "text-xs text-choco/60" },
+            Object.keys(ins).length,
+            " precios modificados por ti \u00B7 ",
+            lista.length,
+            " insumos mostrados"),
+        React.createElement("div", { className: "grid sm:grid-cols-2 gap-2" }, lista.map(x => {
+            const mod = ins[x.k] !== undefined && ins[x.k] !== "";
+            return (React.createElement("label", { key: x.k, className: "rounded-xl p-3 border-l-4 bg-white flex items-center justify-between gap-2", style: { borderColor: mod ? "#E11D48" : "#10B981" } },
+                React.createElement("span", null,
+                    React.createElement("b", null, x.n),
+                    React.createElement("span", { className: "block text-xs text-choco/60" },
+                        "S/ ",
+                        un(x.base),
+                        " \u00B7 usado en ",
+                        x.uso,
+                        " recetas",
+                        mod ? " · modificado" : "")),
+                React.createElement("input", { type: "number", min: "0", step: "any", className: inp + " !w-24", value: mod ? ins[x.k] : x.p, onChange: e => setIns(o => ({ ...o, [x.k]: e.target.value })), "aria-label": "Precio de " + x.n })));
+        }))));
+}
+/* ---------- RANKING ---------- */
+const PAL = ["#E11D48", "#D97706", "#10B981", "#7C3AED", "#2F7FA3", "#EAB308", "#EC4899", "#14B8A6"];
+function RankCard({ titulo, sub, datos, col, nota }) {
+    const mx = Math.max(...datos.map(d => d.v), 1), M = ["#F59E0B", "#94A3B8", "#C2763A"];
+    return (React.createElement("div", { className: card + " overflow-hidden" },
+        React.createElement("div", { className: "p-4 text-white", style: { background: `linear-gradient(120deg,${col},${mixc(col, "#ffffff", .35)})` } },
+            React.createElement("h3", { className: "serif text-xl font-extrabold" }, titulo),
+            React.createElement("p", { className: "text-sm opacity-95" }, sub)),
+        React.createElement("div", { className: "p-4" },
+            React.createElement(Dona, { parts: datos.slice(0, 6).map((d, i) => ({ n: d.n, v: Math.max(d.v, 0), c: PAL[i] })), centro: ["Top 6", ""] }),
+            React.createElement("ol", { className: "mt-3 space-y-2" }, datos.map((d, i) => (React.createElement("li", { key: d.n },
+                React.createElement("div", { className: "flex justify-between text-sm gap-2" },
+                    React.createElement("span", null,
+                        React.createElement("b", { className: "inline-block w-6 h-6 rounded-full text-white text-center text-xs leading-6 mr-2 shadow", style: { background: i < 3 ? `linear-gradient(135deg,${mixc(M[i], "#ffffff", .35)},${M[i]})` : col } }, i + 1),
+                        d.n),
+                    React.createElement("b", { className: "whitespace-nowrap", style: { color: PAL[i] || col } }, S(d.v))),
+                React.createElement("div", { className: "h-3 rounded-full mt-1 overflow-hidden", style: { background: (PAL[i] || col) + "22" } },
+                    React.createElement("i", { className: "block h-full rounded-full", style: { width: Math.max(d.v, 0) / mx * 100 + "%", background: `linear-gradient(90deg,${PAL[i] || col},${mixc(PAL[i] || col, "#ffffff", .4)})` } })))))),
+            React.createElement("p", { className: "text-xs text-choco/60 mt-2" }, nota))));
+}
+function Ranking() {
+    const [ref, setRef] = useLS("pastel:ref", [[70, 7], [18, 1.2], [45, 7], [32, 5], [55, 8]]);
+    const [cat, setCat] = useState(-1);
+    const setP = (i, j, v) => setRef(ref.map((x, k) => k === i ? x.map((y, m) => m === j ? v : y) : x));
+    const filas = ALL.filter(r => cat < 0 || r.cat === cat).map(r => { const { costo, porc: pc } = calcDe(r), pm = prem(r), pe = (+ref[r.cat][0] || 0) * pm, pp = (+ref[r.cat][1] || 0) * pm, porc = pc; return { n: r.n, gE: pe - costo, gP: porc * pp - costo, roi: (porc * pp - costo) / Math.max(costo, .01) }; });
+    const top = (k, n) => [...filas].sort((a, b) => b[k] - a[k]).slice(0, n).map(f => ({ n: f.n, v: f[k] }));
+    return (React.createElement("div", { className: "space-y-4" },
+        React.createElement("div", { className: "rounded-3xl p-5 text-white", style: { background: "linear-gradient(120deg,#7C3AED,#E11D48 60%,#D97706)" } },
+            React.createElement("h2", { className: "serif text-2xl font-extrabold" }, "Ranking: \u00BFqu\u00E9 postres te dejan m\u00E1s ganancia?"),
+            React.createElement("p", { className: "text-sm opacity-95 mt-1" }, "Calculamos el costo de cada una de las 100 recetas con los precios de mercado y lo comparamos con el precio al que vendes. Si editas una receta en su calculadora, el ranking se actualiza.")),
+        React.createElement("div", { className: card + " p-4" },
+            React.createElement("h3", { className: "serif text-lg font-extrabold mb-2" }, "Tus precios de venta de referencia"),
+            React.createElement("div", { className: "grid gap-2" }, CATS.map((c, i) => (React.createElement("div", { key: c, className: "grid grid-cols-3 gap-2 items-end rounded-xl p-2", style: { background: CC[i][0] + "12" } },
+                React.createElement("b", { style: { color: CC[i][0] } }, c),
+                React.createElement("label", { className: "text-xs" },
+                    i === 1 ? "Precio de la tanda (S/)" : "Precio entero (S/)",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: ref[i][0], onChange: e => setP(i, 0, e.target.value), className: inp })),
+                React.createElement("label", { className: "text-xs" },
+                    i === 1 ? "Precio por pan (S/)" : "Precio por porción (S/)",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: ref[i][1], onChange: e => setP(i, 1, e.target.value), className: inp })))))),
+            React.createElement("p", { className: "text-xs text-choco/60 mt-2" }, "Los postres de presentaci\u00F3n fina (cheesecake, macarons, tiramis\u00FA, croissants, etc.) usan un precio 30% mayor.")),
+        React.createElement("div", { className: "flex flex-wrap gap-2" }, [["Todas", -1], ...CATS.map((c, i) => [c, i])].map(([t, v]) => React.createElement("button", { key: t, onClick: () => setCat(v), className: "rounded-full px-4 py-2 text-sm font-bold border-2", style: { background: cat === v ? "#2C1810" : "#fff", color: cat === v ? "#fff" : "#2C1810", borderColor: "#2C1810" } }, t))),
+        React.createElement("div", { className: "grid lg:grid-cols-3 gap-3" },
+            React.createElement(RankCard, { titulo: "Vendiendo entero", sub: "Mayor ganancia por tanda vendida completa", datos: top("gE", 8), col: "#D97706", nota: "Ganancia = precio entero \u2212 costo de la receta." }),
+            React.createElement(RankCard, { titulo: "Vendiendo por porciones", sub: "Mayor ganancia por tanda cortada en porciones", datos: top("gP", 8), col: "#E11D48", nota: "Ganancia = porciones \u00D7 precio por porci\u00F3n \u2212 costo." }),
+            React.createElement(RankCard, { titulo: "M\u00E1s rentables por sol invertido", sub: "Cu\u00E1nto ganas por cada S/ 1 que gastas (en porciones)", datos: top("roi", 8), col: "#7C3AED", nota: "Ejemplo: S/ 3.00 significa que por cada S/ 1 de ingredientes ganas S/ 3.00." }))));
+}
+/* ---------- RECETARIO ---------- */
+/* ---- Fotos reales: 1) la tuya, 2) FOTOS_URL, 3) carpeta fotos/nombre.jpg, 4) Wikipedia (si existe), 5) cuadro neutro ---- */
+const slug = n => n.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+const FOTO_WIKI = { "Tiramisú Clásico": "Tiramisú", "Cheesecake Nueva York": "Tarta de queso", "Crème Brûlée": "Crème brûlée", "Panna Cotta": "Panna cotta", "Macarons": "Macaron", "Croissants": "Croissant", "Dorayakis": "Dorayaki", "Brownie": "Brownie", "Cookies de Chispas": "Galleta con trocitos de chocolate", "Profiteroles": "Profiterol", "Éclairs": "Éclair", "Mochi": "Mochi", "Baklava": "Baklava", "Churros": "Churro", "Waffles Belgas": "Gofre", "Strudel de Manzana": "Strudel", "Flan de Caramelo": "Flan",
+    "Suspiro a la Limeña": "Suspiro a la limeña", "Mazamorra Morada": "Mazamorra morada", "Arroz con Leche": "Arroz con leche", "Alfajores de Maicena": "Alfajor", "Picarones": "Picarones", "Turrón de Doña Pepa": "Turrón de Doña Pepa", "Queso Helado": "Queso helado", "Pastel de Choclo": "Pastel de choclo", "Cocadas": "Cocada", "Pionono": "Pionono",
+    "Baguette": "Baguette", "Ciabatta": "Ciabatta", "Focaccia": "Focaccia", "Brioche": "Brioche", "Bagels": "Bagel", "Pan Pita": "Pan de pita", "Pan Naan": "Naan", "Pan de Masa Madre": "Pan de masa madre", "Pan Integral": "Pan integral", "Pan de Centeno": "Pan de centeno", "Pan de Molde": "Pan de molde",
+    "Red Velvet": "Red velvet", "Selva Negra": "Tarta Selva Negra", "Torta Tres Leches": "Pastel de tres leches", "Torta de Zanahoria": "Tarta de zanahoria", "Pai de Limón": "Tarta de limón", "Tarta Tatin": "Tarta Tatin", "Tarta de Manzana": "Tarta de manzana", "Banoffee": "Banoffee" };
+const wikiMem = {}, wikiSub = {};
+function useWiki(t) {
+    const [u, setU] = useState(t ? (wikiMem[t] || null) : null);
+    useEffect(() => {
+        if (!t)
+            return;
+        if (wikiMem[t]) {
+            setU(wikiMem[t]);
+            return;
+        }
+        const L = wikiSub[t] = wikiSub[t] || [];
+        L.push(setU);
+        if (L.length > 1)
+            return;
+        fetch("https://es.wikipedia.org/api/rest_v1/page/summary/" + encodeURIComponent(t)).then(r => r.ok ? r.json() : null)
+            .then(j => { const x = j && j.thumbnail && j.thumbnail.source; if (x) {
+            wikiMem[t] = x;
+            L.forEach(f => f(x));
+        } }).catch(() => { });
+    }, [t]);
+    return u;
+}
+const GEN_WIKI = { t: "Pastel", p: "Tarta", b: "Pan", c: "Postre", g: "Galleta", f: "Flan" };
+const GEN_WIKI2 = { t: "Bizcocho", p: "Tarta de manzana", b: "Baguette", c: "Mousse", g: "Cookie", f: "Crème brûlée" };
+function Portada({ r, foto }) {
+    const a = useWiki(FOTO_WIKI[r.n]), b = useWiki(GEN_WIKI[r.t]), b2 = useWiki(GEN_WIKI2[r.t]);
+    const c = [foto, FOTOS_URL[r.n], "fotos/" + slug(r.n) + ".jpg", a, b, b2].filter(Boolean), k = c.join("|"), [i, setI] = useState(0);
+    useEffect(() => { setI(0); }, [k]);
+    const src = c[i], col = CC[r.cat];
+    return (React.createElement("div", { className: "w-full aspect-[4/3] overflow-hidden relative rounded-t-3xl", style: { background: `linear-gradient(135deg,${col[1]}66,#fff)` } },
+        !src && React.createElement("div", { className: "absolute inset-0 flex flex-col items-center justify-center text-center p-3" },
+            React.createElement("b", { className: "serif text-lg leading-tight", style: { color: col[0] } }, r.n),
+            React.createElement("span", { className: "text-xs text-choco/60 mt-1" }, "Foto referencial pr\u00F3ximamente")),
+        src && React.createElement("img", { key: src, src: src, alt: r.n, loading: "lazy", className: "absolute inset-0 w-full h-full object-cover", onError: () => setI(x => x + 1) }),
+        src && src.includes("wikimedia") && React.createElement("span", { className: "absolute bottom-1 right-1 rounded-full bg-white/80 text-choco text-[10px] px-2 py-0.5" }, "Foto referencial \u00B7 Wikipedia")));
+}
+function Recetario() {
+    const [cat, setCat] = useState(0), [q, setQ] = useState(""), [sel, setSel] = useState(null), [vf, setVf] = useState(false), [info, setInfo] = useState("");
+    const [fotos, setFotos] = useLS("pastel:fotos", {});
+    const subir = (r, f) => f && leerFoto(f, d => setFotos(o => ({ ...o, [r.id]: d })));
+    const lote = async (files) => {
+        const nuevo = {}, no = [];
+        let ok = 0;
+        for (const f of Array.from(files)) {
+            const r = ALL.find(x => slug(x.n) === slug(f.name.replace(/\.[^.]+$/, "")));
+            if (!r) {
+                no.push(f.name);
+                continue;
+            }
+            nuevo[r.id] = await new Promise(res => leerFoto(f, res));
+            ok++;
+        }
+        setFotos(o => ({ ...o, ...nuevo }));
+        setInfo(`${ok} foto${ok === 1 ? "" : "s"} asignada${ok === 1 ? "" : "s"}.` + (no.length ? ` No coinciden con ninguna receta: ${no.slice(0, 4).join(", ")}${no.length > 4 ? "…" : ""}. Usa los nombres de fotos/LEEME.txt.` : ""));
+    };
+    const bajarZip = async () => {
+        if (!window.JSZip)
+            return setInfo("No se pudo cargar el generador de ZIP. Revisa tu conexión.");
+        const z = new window.JSZip(), car = z.folder("fotos");
+        let n = 0;
+        Object.entries(fotos).forEach(([id, d]) => { const r = ALL.find(x => x.id === id); if (r && /^data:image/.test(d)) {
+            car.file(slug(r.n) + ".jpg", d.split(",")[1], { base64: true });
+            n++;
+        } });
+        if (!n)
+            return setInfo("Aún no tienes fotos tuyas guardadas para descargar.");
+        const b = await z.generateAsync({ type: "blob" }), a = document.createElement("a");
+        a.href = URL.createObjectURL(b);
+        a.download = "fotos.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+        setInfo(`Listo: fotos.zip con ${n} fotos. Descomprímelo dentro de tu carpeta pastelapp-web (debe quedar pastelapp-web/fotos/...) y vuelve a subir la carpeta a Netlify para que todos tus clientes las vean.`);
+    };
+    if (sel) {
+        const r = sel, foto = fotos[r.id], c = CC[r.cat], x = extras(r), tint = c[0] + "14";
+        const H = t => React.createElement("h3", { className: "serif text-2xl font-extrabold mb-3 pb-1 border-b-4", style: { color: c[0], borderColor: c[1] } }, t);
+        return (React.createElement("div", { className: "space-y-4" },
+            React.createElement("button", { onClick: () => setSel(null), className: "font-bold underline" }, "\u2190 Volver al recetario"),
+            React.createElement("div", { className: card + " overflow-hidden" },
+                React.createElement(Portada, { r: r, foto: foto }),
+                React.createElement("div", { className: "p-4", style: { background: `linear-gradient(110deg,${c[0]},${c[1]})` } },
+                    React.createElement("h2", { className: "serif text-3xl font-extrabold text-white" }, r.n),
+                    React.createElement("div", { className: "flex flex-wrap gap-2 mt-2 text-sm font-bold" },
+                        React.createElement("span", { className: "rounded-full bg-white px-3 py-1" },
+                            r.kcal,
+                            " kcal por porci\u00F3n"),
+                        React.createElement("span", { className: "rounded-full bg-white px-3 py-1" },
+                            r.por,
+                            " porciones"),
+                        React.createElement("span", { className: "rounded-full bg-white px-3 py-1" }, CATS[r.cat]))),
+                React.createElement("div", { className: "p-3 flex flex-wrap gap-2 items-center text-sm" },
+                    React.createElement("label", { className: btn + "bg-gradient-to-r from-pink-500 to-violet-500 text-white cursor-pointer" },
+                        foto ? "Cambiar mi foto" : "Agregar mi foto real",
+                        React.createElement("input", { type: "file", accept: "image/*", className: "hidden", onChange: e => subir(r, e.target.files[0]) })),
+                    foto && React.createElement("button", { className: btn + "border border-choco/20", onClick: () => setFotos(o => { const n = { ...o }; delete n[r.id]; return n; }) }, "Quitar foto"),
+                    React.createElement("span", { className: "text-choco/60" }, "La foto se guarda solo en este navegador."))),
+            React.createElement("section", { className: "rounded-2xl p-4 border-2", style: { background: tint, borderColor: c[0] + "55" } },
+                H("Sobre este postre"),
+                React.createElement("p", { className: "leading-relaxed" }, x.sobre),
+                React.createElement("div", { className: "grid sm:grid-cols-3 gap-2 mt-3" }, [["Tiempo", x.tiempo, c[0]], ["Dificultad", x.dif[0], x.dif[1]], ["Conservación", x.cons, "#0F766E"]].map(([t, v, col]) => React.createElement("div", { key: t, className: "rounded-xl bg-white p-3 border-l-4", style: { borderColor: col } },
+                    React.createElement("p", { className: "text-xs font-extrabold uppercase tracking-wide", style: { color: col } }, t),
+                    React.createElement("p", { className: "text-sm" }, v))))),
+            React.createElement("section", { className: card + " p-4" },
+                H("Ingredientes"),
+                React.createElement(Ingredientes, { ing: r.ing }),
+                React.createElement("ul", { className: "grid sm:grid-cols-2 gap-2 mt-3" }, r.ing.map(([n, qn], i) => React.createElement("li", { key: i, className: "flex items-center justify-between rounded-xl px-3 py-2 border-l-4", style: { borderColor: c[0], background: `linear-gradient(90deg,${c[0]}18,#fff)` } },
+                    React.createElement("span", null, n),
+                    React.createElement("b", { className: "whitespace-nowrap ml-2", style: { color: c[0] } }, qn))))),
+            React.createElement("section", { className: card + " p-4" },
+                H("Preparación paso a paso"),
+                React.createElement("ol", { className: "space-y-3" }, r.pasos.map((st, i) => (React.createElement("li", { key: i, className: "flex gap-3 items-center rounded-2xl p-3", style: { background: i % 2 ? "#fff" : tint, borderLeft: `6px solid ${c[0]}` } },
+                    React.createElement(PasoImg, { s: st }),
+                    React.createElement("div", null,
+                        React.createElement("span", { className: "inline-block rounded-full text-white text-xs font-bold px-2 py-0.5 mb-1", style: { background: c[0] } },
+                            "Paso ",
+                            i + 1),
+                        React.createElement("p", null, st))))))),
+            React.createElement("section", { className: "rounded-2xl p-4", style: { background: "linear-gradient(135deg,#fff7e6,#fde8ee)" } },
+                H("Consejos del pastelero"),
+                React.createElement("div", { className: "grid md:grid-cols-3 gap-2" },
+                    x.tips.map((t, i) => React.createElement("div", { key: i, className: "rounded-xl bg-white p-3 shadow-sm border-t-4", style: { borderColor: [c[0], "#D97706", "#0F766E"][i] } },
+                        React.createElement("p", { className: "text-sm" }, t))),
+                    React.createElement("div", { className: "md:col-span-3 rounded-xl p-3 text-white text-sm", style: { background: "linear-gradient(110deg,#0F766E,#10B981)" } },
+                        React.createElement("b", null, "Para vender:"),
+                        " la calculadora de abajo ya trae el costo estimado de esta receta. Ajusta los precios de tus ingredientes y tu ganancia para saber cu\u00E1nto cobrar por el entero y por cada porci\u00F3n."))),
+            React.createElement(CalcRecetario, { r: r, c: c })));
+    }
+    const esVegana = r => !/huevo|yema|clara|leche|mantequilla|queso|crema|miel|manjar|gelatina|mascarpone|yogur|soletilla/i.test(r.ing.map(x => x[0]).join(" ").replace(/leche de coco/gi, ""));
+    const lista = ALL.filter(r => r.cat === cat && r.n.toLowerCase().includes(q.toLowerCase()) && (!vf || esVegana(r)));
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex flex-wrap gap-2" }, CATS.map((n, i) => React.createElement("button", { key: n, onClick: () => setCat(i), className: "rounded-full px-4 py-2 text-sm font-bold border-2 text-white", style: { background: cat === i ? `linear-gradient(110deg,${CC[i][0]},${CC[i][1]})` : "#fff", color: cat === i ? "#fff" : CC[i][0], borderColor: CC[i][0] } },
+            n,
+            " (",
+            ALL.filter(r => r.cat === i).length,
+            ")"))),
+        React.createElement("input", { value: q, onChange: e => setQ(e.target.value), placeholder: "Buscar en " + CATS[cat], className: inp, "aria-label": "Buscar receta" }),
+        React.createElement("div", { className: "rounded-2xl border-2 border-dashed border-pink-300 bg-white/80 p-3 space-y-2" },
+            React.createElement("b", { className: "text-sm" }, "Tus fotos reales"),
+            React.createElement("p", { className: "text-xs text-choco/70" },
+                "Elige varias fotos a la vez: se asignan solas si el archivo se llama como la receta (ej: ",
+                React.createElement("code", null, "pai-de-limon.jpg"),
+                "). La lista de nombres est\u00E1 en ",
+                React.createElement("code", null, "fotos/LEEME.txt"),
+                "."),
+            React.createElement("div", { className: "flex flex-wrap gap-2" },
+                React.createElement("label", { className: btn + "bg-gradient-to-r from-pink-500 to-violet-500 text-white cursor-pointer text-sm" },
+                    "Subir varias fotos",
+                    React.createElement("input", { type: "file", accept: "image/*", multiple: true, className: "hidden", onChange: e => { lote(e.target.files); e.target.value = ""; } })),
+                React.createElement("button", { className: btn + "border border-choco/20 text-sm", onClick: bajarZip }, "Descargar mis fotos para Netlify (.zip)"),
+                React.createElement("span", { className: "text-xs self-center text-choco/60" },
+                    Object.keys(fotos).length,
+                    " fotos tuyas guardadas en este navegador")),
+            info && React.createElement("p", { className: "text-sm text-choco", role: "status" }, info)),
+        React.createElement("label", { className: "flex items-center gap-2 text-sm font-bold" },
+            React.createElement("input", { type: "checkbox", checked: vf, onChange: e => setVf(e.target.checked) }),
+            "Solo recetas veganas (estimado seg\u00FAn sus ingredientes)"),
+        React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-4 gap-3" }, lista.map(r => (React.createElement("button", { key: r.id, onClick: () => setSel(r), className: card + " overflow-hidden text-left hover:shadow-xl hover:-translate-y-0.5 transition flex flex-col h-full" },
+            React.createElement(Portada, { r: r, foto: fotos[r.id] }),
+            React.createElement("div", { className: "p-3 flex-1", style: { background: `linear-gradient(135deg,${CC[cat][0]}22,${CC[cat][1]}44)`, borderTop: `4px solid ${CC[cat][0]}` } },
+                React.createElement("b", { className: "serif block leading-tight" }, r.n),
+                React.createElement("span", { className: "inline-block mt-1 rounded-full px-2 py-0.5 text-xs font-bold text-white", style: { background: CC[cat][0] } },
+                    r.kcal,
+                    " kcal"),
+                " ",
+                React.createElement("span", { className: "text-xs text-choco/70" },
+                    r.por,
+                    " porciones")))))),
+        !lista.length && React.createElement("p", null, "No hay recetas con ese nombre."),
+        React.createElement("p", { className: "text-xs text-choco/60" }, "Las im\u00E1genes son ilustraciones referenciales; puedes agregar tu propia foto real a cada receta. Calor\u00EDas aproximadas por porci\u00F3n.")));
+}
+/* ---------- MIS VENTAS ---------- */
+const MES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+function Ventas() {
+    const [vs, setVs] = useLS("pastel:ventas", []);
+    const [reinv, setReinv] = useLS("pastel:reinv", 30);
+    const hoy = new Date().toISOString().slice(0, 10);
+    const [f, setF] = useState({ f: hoy, p: RECS[0].n, otro: "", q: 1, ing: "", cos: "", otr: "" });
+    const nombre = f.p === "__otro" ? f.otro : f.p;
+    const auto = () => { const r = RECS.find(x => x.n === f.p); if (r)
+        setF({ ...f, cos: Math.round(costoDe(r) * (+f.q || 1) * 100) / 100 }); };
+    const add = () => {
+        if (!nombre.trim() || !(+f.ing > 0))
+            return alert("Escribe el producto y cuánto cobraste por la venta.");
+        setVs([{ id: Date.now(), f: f.f, p: nombre.trim(), q: +f.q || 1, ing: +f.ing, cos: +f.cos || 0, otr: +f.otr || 0 }, ...vs]);
+        setF({ ...f, ing: "", cos: "", otr: "", q: 1 });
+    };
+    const sum = k => vs.reduce((a, v) => a + v[k], 0);
+    const I = sum("ing"), C = sum("cos"), O = sum("otr"), bruta = I - C, neta = bruta - O;
+    const re = Math.max(neta, 0) * reinv / 100, tuya = Math.max(neta - re, 0);
+    const meses = [...new Set(vs.map(v => v.f.slice(0, 7)))].sort().slice(-6).map(m => { const L = vs.filter(v => v.f.slice(0, 7) === m); return { m: MES[+m.slice(5) - 1], ing: L.reduce((a, v) => a + v.ing, 0), neta: L.reduce((a, v) => a + v.ing - v.cos - v.otr, 0) }; });
+    const prods = Object.entries(vs.reduce((o, v) => { const x = o[v.p] || { neta: 0, ing: 0, q: 0 }; x.neta += v.ing - v.cos - v.otr; x.ing += v.ing; x.q += v.q; o[v.p] = x; return o; }, {})).map(([n, x]) => [n, x.neta, x]).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const pm = Math.max(...prods.map(p => p[1]), 1);
+    const w = 300 / Math.max(meses.length, 1), mx = Math.max(...meses.flatMap(d => [d.ing, d.neta]), 1);
+    return (React.createElement("div", { className: "space-y-4" },
+        React.createElement("div", { className: "grid grid-cols-2 lg:grid-cols-5 gap-2" }, [["Ingresos totales", I, "#D97706", "#FBBF24"], ["Ganancia bruta", bruta, "#0F766E", "#2DD4BF"], ["Ganancia neta", neta, "#059669", "#6EE7B7"], ["A reinvertir", re, "#E11D48", "#FB7185"], ["Para ti", tuya, "#7C3AED", "#C4B5FD"]].map(([t, v, a, b]) => (React.createElement("div", { key: t, className: "rounded-2xl p-3 text-white shadow", style: { background: `linear-gradient(135deg,${a},${b})` } },
+            React.createElement("p", { className: "text-xs opacity-90" }, t),
+            React.createElement("p", { className: "serif text-2xl font-extrabold" }, S(v)))))),
+        React.createElement("p", { className: "text-xs text-choco/60" }, "Ganancia bruta = ingresos \u2212 costo de ingredientes. Ganancia neta = bruta \u2212 otros gastos (gas, empaque, delivery)."),
+        React.createElement("div", { className: card + " p-4" },
+            React.createElement("label", { className: "font-bold", htmlFor: "rei" },
+                "Reinvertir ",
+                reinv,
+                "% de tu ganancia neta"),
+            React.createElement("input", { id: "rei", type: "range", min: "0", max: "100", step: "5", value: reinv, onChange: e => setReinv(+e.target.value), className: "w-full accent-rose" })),
+        React.createElement("div", { className: "grid md:grid-cols-2 gap-3" },
+            React.createElement("div", { className: "rounded-2xl p-4 border-2 border-amber-200 bg-amber-50" },
+                React.createElement("p", { className: "font-extrabold mb-2" }, "Ingresos y ganancia neta por mes"),
+                meses.length === 0 ? React.createElement("p", { className: "text-sm text-choco/60" }, "Registra tu primera venta para ver el gr\u00E1fico.") : (React.createElement(React.Fragment, null,
+                    React.createElement("svg", { viewBox: "0 0 320 190", className: "w-full", role: "img", "aria-label": "Ingresos y ganancia por mes" },
+                        React.createElement("line", { x1: "10", x2: "310", y1: "160", y2: "160", stroke: "#2C1810", strokeOpacity: ".3" }),
+                        meses.map((d, i) => {
+                            const x = 10 + i * w, h1 = Math.max(d.ing, 0) / mx * 120, h2 = Math.max(d.neta, 0) / mx * 120;
+                            return (React.createElement("g", { key: i },
+                                React.createElement("rect", { x: x + w * .1, y: 160 - h1, width: w * .38, height: h1, rx: "4", fill: "#D97706" }),
+                                React.createElement("rect", { x: x + w * .52, y: 160 - h2, width: w * .38, height: h2, rx: "4", fill: "#10B981" }),
+                                React.createElement("text", { x: x + w * .29, y: 155 - h1, textAnchor: "middle", fontSize: "7.5", fontWeight: "700" }, Math.round(d.ing)),
+                                React.createElement("text", { x: x + w * .71, y: 155 - h2, textAnchor: "middle", fontSize: "7.5", fontWeight: "700" }, Math.round(d.neta)),
+                                React.createElement("text", { x: x + w / 2, y: "177", textAnchor: "middle", fontSize: "10" }, d.m)));
+                        })),
+                    React.createElement("p", { className: "text-xs flex gap-3 justify-center" },
+                        React.createElement("span", null,
+                            React.createElement("i", { className: "inline-block w-3 h-3 rounded-sm mr-1", style: { background: "#D97706" } }),
+                            "Ingresos"),
+                        React.createElement("span", null,
+                            React.createElement("i", { className: "inline-block w-3 h-3 rounded-sm mr-1", style: { background: "#10B981" } }),
+                            "Ganancia neta"))))),
+            React.createElement("div", { className: "rounded-2xl p-4 border-2 border-rose-200 bg-rose-50" },
+                React.createElement("p", { className: "font-extrabold mb-2" }, "\u00BFA d\u00F3nde va lo que vendes?"),
+                React.createElement(Dona, { parts: [{ n: "Ingredientes", v: C, c: "#D97706" }, { n: "Otros gastos", v: O, c: "#2C1810" }, { n: "Reinversión", v: re, c: "#E11D48" }, { n: "Para ti", v: tuya, c: "#7C3AED" }], centro: ["Ingresos", S(I)] }))),
+        prods.length > 0 && React.createElement("div", { className: "rounded-2xl p-4 border-2 border-teal-200 bg-teal-50" },
+            React.createElement("p", { className: "font-extrabold mb-2" }, "Tus productos m\u00E1s rentables"),
+            prods.map(([n, v, o], i) => React.createElement("div", { key: n, className: "mb-2" },
+                React.createElement("div", { className: "flex justify-between text-sm" },
+                    React.createElement("span", null,
+                        n,
+                        " ",
+                        React.createElement("span", { className: "text-xs text-choco/60" },
+                            "\u00B7 ",
+                            o.ing ? Math.round(v / o.ing * 100) : 0,
+                            "% de margen \u00B7 ",
+                            o.q,
+                            " vendidos")),
+                    React.createElement("b", null, S(v))),
+                React.createElement("div", { className: "h-3 rounded-full bg-white overflow-hidden" },
+                    React.createElement("div", { className: "h-full rounded-full", style: { width: Math.max(v, 0) / pm * 100 + "%", background: CC[i % 5][0] } }))))),
+        React.createElement("div", { className: card + " p-4 space-y-2" },
+            React.createElement("h3", { className: "serif text-xl font-extrabold" }, "Anotar una venta"),
+            React.createElement("div", { className: "grid sm:grid-cols-3 gap-2" },
+                React.createElement("label", { className: "text-sm" },
+                    "Fecha",
+                    React.createElement("input", { type: "date", value: f.f, onChange: e => setF({ ...f, f: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm" },
+                    "Producto",
+                    React.createElement("select", { value: f.p, onChange: e => setF({ ...f, p: e.target.value }), className: inp },
+                        RECS.map(r => React.createElement("option", { key: r.id }, r.n)),
+                        React.createElement("option", { value: "__otro" }, "Otro (escribir)"))),
+                f.p === "__otro" ? React.createElement("label", { className: "text-sm" },
+                    "Nombre del producto",
+                    React.createElement("input", { value: f.otro, onChange: e => setF({ ...f, otro: e.target.value }), className: inp })) : React.createElement("label", { className: "text-sm" },
+                    "Cantidad vendida",
+                    React.createElement("input", { type: "number", min: "1", value: f.q, onChange: e => setF({ ...f, q: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm" },
+                    "Cobraste (S/)",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: f.ing, onChange: e => setF({ ...f, ing: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm" },
+                    "Costo de ingredientes (S/)",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: f.cos, onChange: e => setF({ ...f, cos: e.target.value }), className: inp })),
+                React.createElement("label", { className: "text-sm" },
+                    "Otros gastos (S/)",
+                    React.createElement("input", { type: "number", min: "0", step: "any", value: f.otr, onChange: e => setF({ ...f, otr: e.target.value }), className: inp }))),
+            React.createElement("div", { className: "flex flex-wrap gap-2" },
+                React.createElement("button", { onClick: add, className: btn + "bg-caramel text-white" }, "Guardar venta"),
+                RECS.some(r => r.n === f.p) && React.createElement("button", { onClick: auto, className: btn + "border-2 border-caramel text-caramel" }, "Calcular costo desde la calculadora"))),
+        vs.length > 0 && React.createElement("div", { className: card + " overflow-x-auto" },
+            React.createElement("table", { className: "w-full text-sm min-w-[640px]" },
+                React.createElement("thead", { className: "text-left bg-blush/50" },
+                    React.createElement("tr", null, ["Fecha", "Producto", "Cant.", "Ingreso", "Costo", "Otros", "Neta", ""].map(h => React.createElement("th", { key: h, className: "px-3 py-2" }, h)))),
+                React.createElement("tbody", null, vs.map(v => React.createElement("tr", { key: v.id, className: "border-t border-choco/10" },
+                    React.createElement("td", { className: "px-3 py-2" }, v.f),
+                    React.createElement("td", { className: "px-3 py-2 font-bold" }, v.p),
+                    React.createElement("td", { className: "px-3 py-2" }, v.q),
+                    React.createElement("td", { className: "px-3 py-2" }, S(v.ing)),
+                    React.createElement("td", { className: "px-3 py-2" }, S(v.cos)),
+                    React.createElement("td", { className: "px-3 py-2" }, S(v.otr)),
+                    React.createElement("td", { className: "px-3 py-2 font-bold", style: { color: v.ing - v.cos - v.otr >= 0 ? "#059669" : "#E11D48" } }, S(v.ing - v.cos - v.otr)),
+                    React.createElement("td", { className: "px-3 py-2" },
+                        React.createElement("button", { className: "text-rose", "aria-label": "Eliminar venta", onClick: () => setVs(vs.filter(x => x.id !== v.id)) }, "\u2715")))))))));
+}
+/* ---------- ACCESO (landing + pago) ---------- */
+const FEATS = ["Calculadora de costos con marcas y precios en soles", "Precio sugerido, margen de ganancia y simulador de ventas", "Recetario con 100 postres: ingredientes exactos y paso a paso ilustrado", "Mis Ventas: ganancia bruta, neta y reinversión con gráficos", "Tus recetas, precios y ventas guardados en tu navegador"];
+function Landing({ u, users, setUsers, setSesion, salir, onAdmin }) {
+    const [tab, setTab] = useState("registro"), [f, setF] = useState({ nombre: "", correo: "", tel: "" }), [err, setErr] = useState("");
+    const [paso, setPaso] = useState("datos"), [cod, setCod] = useState(""), [busy, setBusy] = useState(false), [cp, setCp] = useState(false);
+    const [ad, setAd] = useState(false), [ae, setAe] = useState(""), [ap, setAp] = useState(""), [aer, setAer] = useState("");
+    const c = f.correo.trim().toLowerCase(), reg = tab === "registro";
+    const adminCodigo = async () => {
+        if (!/^\S+@\S+\.\S+$/.test(ae.trim()))
+            return setAer("Escribe tu correo de administrador.");
+        setBusy(true);
+        setAer("");
+        const { error } = await SB.auth.signInWithOtp({ email: ae.trim().toLowerCase(), options: { shouldCreateUser: true, data: { nombre: "Administrador" } } });
+        setBusy(false);
+        if (error)
+            return setAer("No se pudo enviar el código: " + error.message);
+        setTab("login");
+        setF({ ...f, correo: ae.trim().toLowerCase() });
+        setPaso("codigo");
+        setAd(false);
+    };
+    const entrarAdmin = async () => { const ok = (await sha(ae.trim().toLowerCase())) === ADMIN_H.e && (await sha(ap)) === ADMIN_H.p; ok ? onAdmin() : setAer("Credenciales incorrectas."); };
+    const msg = encodeURIComponent(`Hola, acabo de yapear S/ 30 para acceso vitalicio a PastelApp. Mi correo es: ${u ? u.correo : c || "[correo]"} y celular: ${u ? u.tel : f.tel || "[celular]"}.`);
+    const cambiar = t => { setTab(t); setErr(""); setPaso("datos"); setCod(""); };
+    const enviar = async () => {
+        const t = f.tel.replace(/\D/g, "");
+        if (!/^\S+@\S+\.\S+$/.test(c))
+            return setErr("Escribe un correo válido.");
+        if (reg && !f.nombre.trim())
+            return setErr("Escribe tu nombre.");
+        if (reg && t.length !== 9)
+            return setErr("El celular debe tener 9 dígitos.");
+        setErr("");
+        const NO = "Este correo no está registrado. Usa la pestaña Registrarme.";
+        const MSG = e => e === "Pendiente" ? "Tu solicitud sigue en espera de aprobación. Podrás entrar cuando sea aprobada." : "Tu acceso fue denegado. Escríbenos por WhatsApp.";
+        if (SB) {
+            setBusy(true);
+            if (!reg) {
+                const { data } = await SB.rpc("estado_por_correo", { p_email: c });
+                if (!data) {
+                    setBusy(false);
+                    return setErr(NO);
+                }
+                if (data !== "Aprobado") {
+                    setBusy(false);
+                    return setErr(MSG(data));
+                }
+            }
+            const { error } = await SB.auth.signInWithOtp({ email: c, options: { shouldCreateUser: reg, data: reg ? { nombre: f.nombre.trim(), telefono: t } : undefined } });
+            setBusy(false);
+            return error ? setErr("No se pudo enviar el código: " + error.message) : setPaso("codigo");
+        }
+        const ex = users.find(x => x.correo === c);
+        if (reg) {
+            if (ex)
+                return setErr("Este correo ya está registrado. Usa la pestaña Ya tengo cuenta.");
+            setUsers(us => [...us, { id: Date.now(), nombre: f.nombre.trim(), correo: c, tel: t, estado: "Pendiente" }]);
+            return setSesion(c);
+        }
+        if (!ex)
+            return setErr(NO);
+        if (ex.estado !== "Aprobado")
+            return setErr(MSG(ex.estado));
+        setSesion(c);
+    };
+    const verificar = async () => { setBusy(true); const { error } = await SB.auth.verifyOtp({ email: c, token: cod.trim(), type: "email" }); setBusy(false); if (error)
+        setErr("Código incorrecto o vencido."); };
+    const tabB = on => "flex-1 rounded-xl px-3 py-2 font-bold " + (on ? "bg-gradient-to-r from-pink-500 to-violet-500 text-white" : "bg-white border border-choco/20");
+    return (React.createElement("div", { className: "grid lg:grid-cols-2 gap-6" },
+        React.createElement("div", { className: "space-y-4" },
+            React.createElement("div", { className: "rounded-3xl p-6 text-choco", style: { background: "linear-gradient(135deg,#FBCFE8,#DDD6FE 60%,#FEF3C7)" } },
+                React.createElement("p", { className: "text-caramel font-bold" }, "Acceso vitalicio"),
+                React.createElement("h1", { className: "text-3xl sm:text-4xl font-extrabold mt-1" }, "Calcula costos, fija precios y hornea con confianza"),
+                React.createElement("p", { className: "mt-3" },
+                    React.createElement("span", { className: "serif text-4xl font-extrabold text-caramel" }, "S/ 30"),
+                    " ",
+                    React.createElement("span", { className: "opacity-80" }, "un solo pago \u00B7 acceso para siempre, sin mensualidades")),
+                React.createElement("div", { className: "flex flex-wrap gap-2 mt-4 text-sm font-bold" }, [["100 recetas", "#D97706"], ["5 categorías", "#E11D48"], ["Ranking de ganancias", "#10B981"]].map(([t, c]) => React.createElement("span", { key: t, className: "rounded-full px-3 py-1 text-white", style: { background: c } }, t))),
+                React.createElement("div", { className: "grid grid-cols-3 gap-2 mt-4" }, ["Tiramisú Clásico", "Cheesecake Nueva York", "Croissants"].map(n => { const r = ALL.find(x => x.n === n); return React.createElement("div", { key: n, className: "rounded-2xl overflow-hidden border-2 border-white/70 shadow" },
+                    React.createElement(Portada, { r: r })); }))),
+            React.createElement("div", { className: card + " p-4" },
+                React.createElement("h2", { className: "serif text-lg font-extrabold mb-2" }, "Al activar tu acceso desbloqueas"),
+                React.createElement("ul", { className: "space-y-2" }, FEATS.map((x, i) => React.createElement("li", { key: x, className: "flex gap-3 items-center rounded-xl px-3 py-2", style: { background: ["#CDEFE0", "#FBD5DC", "#FDE9C4"][i % 3] } },
+                    React.createElement("span", { className: "w-6 h-6 shrink-0 rounded-full bg-gradient-to-r from-pink-500 to-violet-500 text-white text-center text-sm font-extrabold leading-6" }, "\u2713"),
+                    x))))),
+        React.createElement("div", { className: "space-y-4" },
+            u ? (React.createElement("div", { className: card + " p-4" },
+                React.createElement("p", { className: "text-sm text-choco/70" },
+                    u.nombre,
+                    " \u00B7 ",
+                    u.correo),
+                u.estado === "Rechazado"
+                    ? React.createElement("p", { className: "mt-1 inline-block rounded-full bg-rose/10 text-rose font-bold px-3 py-1" }, "Acceso denegado")
+                    : React.createElement("p", { className: "mt-1 inline-block rounded-full bg-amber-100 text-amber-800 font-bold px-3 py-1" }, "Solicitud en espera de aprobaci\u00F3n"),
+                React.createElement("p", { className: "text-sm mt-2" }, u.estado === "Rechazado" ? "Escríbenos por WhatsApp para revisar tu caso." : "Apenas verifiquemos tu pago y el administrador confirme tu registro, se activará tu acceso."),
+                React.createElement("button", { onClick: salir, className: "underline text-sm mt-2" }, "Cerrar sesi\u00F3n"))) : (React.createElement("div", { className: card + " p-4 space-y-2" },
+                React.createElement("div", { className: "flex gap-2" },
+                    React.createElement("button", { className: tabB(reg), onClick: () => cambiar("registro") }, "Registrarme"),
+                    React.createElement("button", { className: tabB(!reg), onClick: () => cambiar("login") }, "Ya tengo cuenta")),
+                React.createElement("p", { className: "text-sm text-choco/70" }, reg ? "Solicita tu acceso. Tu registro quedará en espera de la confirmación del administrador antes de poder usar la app." : "Si ya tienes cuenta, entra solo con tu correo. Solo funciona para quienes ya fueron aprobados."),
+                paso === "datos" ? React.createElement(React.Fragment, null,
+                    reg && React.createElement("input", { className: inp, placeholder: "Tu nombre", value: f.nombre, onChange: e => setF({ ...f, nombre: e.target.value }) }),
+                    React.createElement("input", { className: inp, type: "email", placeholder: "Correo", value: f.correo, onChange: e => { setF({ ...f, correo: e.target.value }); setErr(""); }, onKeyDown: e => e.key === "Enter" && enviar() }),
+                    reg && React.createElement("input", { className: inp, inputMode: "numeric", placeholder: "Celular (9 d\u00EDgitos)", value: f.tel, onChange: e => setF({ ...f, tel: e.target.value }) }),
+                    err && React.createElement("p", { className: "text-rose text-sm" }, err),
+                    React.createElement("button", { disabled: busy, onClick: enviar, className: btn + "w-full bg-gradient-to-r from-pink-500 to-violet-500 text-white disabled:opacity-50" }, reg ? "Solicitar acceso" : "Iniciar sesión")) : React.createElement(React.Fragment, null,
+                    React.createElement("p", { className: "text-sm" },
+                        "Te enviamos un c\u00F3digo a ",
+                        React.createElement("b", null, c),
+                        ". Escr\u00EDbelo aqu\u00ED."),
+                    React.createElement("input", { className: inp, inputMode: "numeric", placeholder: "C\u00F3digo del correo", value: cod, onChange: e => setCod(e.target.value), onKeyDown: e => e.key === "Enter" && verificar() }),
+                    err && React.createElement("p", { className: "text-rose text-sm" }, err),
+                    React.createElement("button", { disabled: busy, onClick: verificar, className: btn + "w-full bg-gradient-to-r from-pink-500 to-violet-500 text-white disabled:opacity-50" }, "Confirmar c\u00F3digo"),
+                    React.createElement("button", { className: "underline text-sm", onClick: () => cambiar(tab) }, "Cambiar correo")))),
+            React.createElement("div", { className: card + " p-4 space-y-2" },
+                React.createElement("h2", { className: "serif text-lg font-extrabold" }, "C\u00F3mo pagar"),
+                React.createElement("p", null,
+                    "Yapea ",
+                    React.createElement("b", null, "S/ 30"),
+                    " al n\u00FAmero ",
+                    React.createElement("b", null, "+51 900 238 270"),
+                    "."),
+                React.createElement("button", { onClick: () => copiar(YAPE, () => { setCp(true); setTimeout(() => setCp(false), 2500); }), className: btn + "bg-caramel text-white" }, cp ? "¡Número copiado!" : "Copiar Número"),
+                React.createElement("a", { href: `https://wa.me/${WA}?text=${msg}`, target: "_blank", rel: "noreferrer", className: btn + "block text-center bg-emerald-600 text-white" }, "Enviar comprobante por WhatsApp")),
+            React.createElement("div", { className: card + " p-4" },
+                React.createElement("button", { className: "w-full flex items-center justify-between font-bold", onClick: () => setAd(!ad), "aria-expanded": ad },
+                    React.createElement("span", null, "Acceso administrador"),
+                    React.createElement("span", null, ad ? "−" : "+")),
+                ad && (SB ? (React.createElement("div", { className: "space-y-2 mt-3" },
+                    React.createElement("p", { className: "text-sm text-choco/70" }, "Entra con tu correo de administrador: te enviaremos un c\u00F3digo de 6 d\u00EDgitos."),
+                    React.createElement("input", { className: inp, type: "email", placeholder: "Correo del administrador", value: ae, onChange: e => setAe(e.target.value) }),
+                    aer && React.createElement("p", { className: "text-rose text-sm" }, aer),
+                    React.createElement("button", { disabled: busy, className: btn + "w-full bg-gradient-to-r from-pink-500 to-violet-500 text-white disabled:opacity-50", onClick: adminCodigo }, "Enviar c\u00F3digo"))) : (React.createElement("div", { className: "space-y-2 mt-3" },
+                    React.createElement("input", { className: inp, type: "email", placeholder: "Correo del administrador", value: ae, onChange: e => setAe(e.target.value) }),
+                    React.createElement("input", { className: inp, type: "password", placeholder: "Contrase\u00F1a", value: ap, onChange: e => setAp(e.target.value), onKeyDown: e => e.key === "Enter" && entrarAdmin() }),
+                    aer && React.createElement("p", { className: "text-rose text-sm" }, aer),
+                    React.createElement("button", { className: btn + "w-full bg-gradient-to-r from-pink-500 to-violet-500 text-white", onClick: entrarAdmin }, "Entrar al panel"))))))));
+}
+/* ---------- ADMIN ---------- */
+function Admin({ users, setEstado, ok, setOk }) {
+    const set = (id, estado) => setEstado(id, estado);
+    const chip = { Pendiente: "bg-amber-100 text-amber-800", Aprobado: "bg-emerald-100 text-emerald-800", Rechazado: "bg-rose/10 text-rose" };
+    const rem = u => `https://wa.me/51${u.tel}?text=${encodeURIComponent(`Hola ${u.nombre}, te recordamos el pago único de S/ 30 por Yape al 900 238 270 para activar tu acceso vitalicio a PastelApp.`)}`;
+    return (React.createElement("div", { className: "space-y-3" },
+        React.createElement("div", { className: "flex items-center justify-between" },
+            React.createElement("h2", { className: "serif text-2xl font-extrabold" }, "Gesti\u00F3n de usuarios"),
+            React.createElement("button", { className: "underline text-sm", onClick: () => setOk(false) }, "Cerrar sesi\u00F3n admin")),
+        React.createElement("div", { className: "grid grid-cols-3 gap-2 text-center" }, ["Pendiente", "Aprobado", "Rechazado"].map(s => React.createElement("div", { key: s, className: "rounded-xl p-3 " + chip[s] },
+            React.createElement("p", { className: "text-2xl font-extrabold" }, users.filter(u => u.estado === s).length),
+            React.createElement("p", { className: "text-xs" },
+                s,
+                "s")))),
+        React.createElement("div", { className: card + " overflow-x-auto" },
+            React.createElement("table", { className: "w-full text-sm min-w-[860px]" },
+                React.createElement("thead", { className: "text-left bg-blush/50" },
+                    React.createElement("tr", null, ["Nombre", "Correo", "Teléfono", "Estado", "Tipo de pago", "Acciones"].map(h => React.createElement("th", { key: h, className: "px-3 py-2" }, h)))),
+                React.createElement("tbody", null, users.map(u => (React.createElement("tr", { key: u.id, className: "border-t border-choco/10" },
+                    React.createElement("td", { className: "px-3 py-2 font-bold" }, u.nombre),
+                    React.createElement("td", { className: "px-3 py-2" }, u.correo),
+                    React.createElement("td", { className: "px-3 py-2" }, u.tel),
+                    React.createElement("td", { className: "px-3 py-2" },
+                        React.createElement("span", { className: "rounded-full px-2 py-1 text-xs font-bold " + chip[u.estado] }, u.estado)),
+                    React.createElement("td", { className: "px-3 py-2" }, "S/ 30 Vitalicio \u00B7 Yape"),
+                    React.createElement("td", { className: "px-3 py-2" },
+                        React.createElement("div", { className: "flex gap-1 flex-wrap" },
+                            React.createElement("button", { onClick: () => set(u.id, "Aprobado"), className: "rounded-md bg-emerald-600 text-white px-2 py-1 text-xs font-bold" }, "Aprobar Acceso"),
+                            React.createElement("button", { onClick: () => set(u.id, "Rechazado"), className: "rounded-md bg-rose text-white px-2 py-1 text-xs font-bold" }, "Denegar / Bloquear"),
+                            React.createElement("a", { href: rem(u), target: "_blank", rel: "noreferrer", className: "rounded-md bg-gradient-to-r from-pink-500 to-violet-500 text-white px-2 py-1 text-xs font-bold" }, "Recordar Pago por WhatsApp")))))))))));
+}
+/* ---------- APP ---------- */
+const DEMO0 = [
+    { id: 1, nombre: "Lucía Ramos", correo: "lucia@correo.com", tel: "951234567", estado: "Aprobado" },
+    { id: 2, nombre: "Marco Quispe", correo: "marco@correo.com", tel: "952345678", estado: "Pendiente" },
+    { id: 3, nombre: "Elena Mamani", correo: "elena@correo.com", tel: "953456789", estado: "Rechazado" },
+];
+function App() {
+    const [users, setUsers] = useLS("pastel:users2", []);
+    const [sesion, setSesion] = useLS("pastel:sesion2", null);
+    const [modo, setModo] = useState("cliente"), [adm, setAdm] = useState(false), [tab, setTab] = useState("calc");
+    const [ses, setSes] = useState(null), [perfil, setPerfil] = useState(null), [lista, setLista] = useState([]), [listo, setListo] = useState(!SB);
+    useEffect(() => { if (!SB)
+        return; SB.auth.getSession().then(({ data }) => { setSes(data.session); setListo(true); }); const { data } = SB.auth.onAuthStateChange((_e, x) => setSes(x)); return () => data.subscription.unsubscribe(); }, []);
+    useEffect(() => { if (!SB)
+        return; if (!ses) {
+        setPerfil(null);
+        return;
+    } SB.from("perfiles").select("*").eq("id", ses.user.id).maybeSingle().then(({ data }) => setPerfil(data)); }, [ses]);
+    const esAdmin = !!(SB && perfil && perfil.rol === "admin");
+    const cargar = () => SB.from("perfiles").select("*").order("created_at", { ascending: false }).then(({ data }) => setLista((data || []).map(x => ({ ...x, correo: x.email, tel: x.telefono }))));
+    useEffect(() => { if (esAdmin)
+        cargar(); }, [esAdmin]);
+    const setEstado = async (id, estado) => { if (SB) {
+        await SB.from("perfiles").update({ estado }).eq("id", id);
+        cargar();
+    }
+    else
+        setUsers(us => us.map(x => x.id === id ? { ...x, estado } : x)); };
+    const u = SB ? (perfil ? { ...perfil, correo: perfil.email, tel: perfil.telefono } : null) : users.find(x => x.correo === sesion);
+    const salir = () => SB ? SB.auth.signOut() : setSesion(null);
+    const acceso = !esAdmin && modo === "cliente" && u && u.estado === "Aprobado";
+    const verAdmin = esAdmin || (!SB && modo === "admin" && adm);
+    return (React.createElement("div", null,
+        React.createElement("header", { className: "text-choco", style: { background: "linear-gradient(110deg,#F9A8D4,#C4B5FD 60%,#FDE68A)", borderBottom: "4px solid #fff" } },
+            React.createElement("div", { className: "max-w-5xl mx-auto px-4 py-3" },
+                React.createElement("h1", { className: "text-2xl font-extrabold" }, "PastelApp"),
+                React.createElement("p", { className: "text-xs text-choco/70" }, "Costos, precios y recetario de reposter\u00EDa")),
+            acceso && React.createElement("nav", { className: "max-w-5xl mx-auto px-4 pb-3 flex flex-wrap gap-2" },
+                [["calc", "Calculadora", "#D97706"], ["rec", "Recetario", "#E11D48"], ["ven", "Mis Ventas", "#10B981"], ["rank", "Ranking", "#7C3AED"], ["ins", "Insumos", "#0F766E"]].map(([k, t, col]) => React.createElement("button", { key: k, onClick: () => setTab(k), className: "rounded-full px-4 py-2 text-sm font-bold " + (tab === k ? "text-white" : "bg-white/70 text-choco"), style: tab === k ? { background: col } : {} }, t)),
+                React.createElement("button", { onClick: salir, className: "ml-auto text-sm underline opacity-80" }, "Salir"))),
+        React.createElement("main", { className: "max-w-5xl mx-auto p-4 pb-28" }, !listo ? React.createElement("p", null, "Cargando\u2026")
+            : verAdmin ? React.createElement(Admin, { users: SB ? lista : users, setEstado: setEstado, ok: true, setOk: v => { if (SB)
+                    salir();
+                else {
+                    setAdm(v);
+                    if (!v)
+                        setModo("cliente");
+                } } })
+                : acceso ? (tab === "calc" ? React.createElement(Calculadora, null) : tab === "rec" ? React.createElement(Recetario, null) : tab === "ven" ? React.createElement(Ventas, null) : tab === "ins" ? React.createElement(Insumos, null) : React.createElement(Ranking, null))
+                    : React.createElement(React.Fragment, null,
+                        React.createElement(Landing, { u: u, users: users, setUsers: setUsers, setSesion: setSesion, salir: salir, onAdmin: () => { setAdm(true); setModo("admin"); } }))),
+        React.createElement("a", { href: `https://wa.me/${WA}?text=${encodeURIComponent("Hola, tengo una sugerencia para PastelApp: ")}`, target: "_blank", rel: "noreferrer", className: "fixed right-4 rounded-full bg-emerald-600 text-white font-bold px-4 py-3 shadow-lg", style: { bottom: "calc(16px + env(safe-area-inset-bottom,0px))" } }, "Buz\u00F3n de Sugerencias")));
+}
+if ("serviceWorker" in navigator && location.protocol.indexOf("http") === 0)
+    window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(() => { }));
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
+
+</script>
+</body>
+</html>
